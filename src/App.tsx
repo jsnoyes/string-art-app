@@ -3,13 +3,15 @@ import { useDropzone } from 'react-dropzone';
 import SliderComponent from './components/SliderComponent';
 
 function App() {
-  const MAX_LINES = 4000;
+  const MAX_LINES = 8000;
   const N_PINS = 36*8;
   const MIN_LOOP = 20;
   const MIN_DISTANCE = 20;      
   const LINE_WEIGHT = 15;
   const SCALE = 1;
   const HOOP_DIAMETER = 0.625;
+  const ERROR_BONUS_THRESHOLD = 5;
+  const ERROR_BONUS = 5;
   
   const [image, setImage] = useState<any>(null);
   const [grayscaleImage, setGrayscalImage] = useState<any>(null);
@@ -17,10 +19,7 @@ function App() {
   const [pinSequence, setPinSequence] = useState<number[]>([]);
   const [lineWidth, setLineWidth] = useState<number>(1);
   const [resultCanvas, setResultCanvas] = useState<HTMLCanvasElement>();
-  const [pinCoordinates, setPinCoordinates] = useState<{
-    x: number;
-    y: number;
-}[]>();
+  const [pinCoordinates, setPinCoordinates] = useState<Point[]>();
   const [resultContext, setResultContext] = useState<CanvasRenderingContext2D>();
 
   const { getRootProps, getInputProps } = useDropzone({
@@ -81,6 +80,7 @@ function App() {
       imgData.data[i+1] = avg;
       imgData.data[i+2] = avg;
     }
+    adjustContrast(imgData.data, 50);
     whiteMaskCircle(imgData)
     setGrayscalImage(imageDataToDataURL(imgData));
     return imgData;
@@ -106,8 +106,8 @@ function App() {
   }
 
   // calculate pin coordinates
-  const getPinCoords = (length: number) => {
-    let pinCoords = [];
+  const getPinCoords = (length: number) =>  {
+    let pinCoords: Point[] = [];
     let center = length / 2;
     let radius = length / 2 - 0.5
 
@@ -144,7 +144,7 @@ function App() {
     return points;
   }
 
-  const createBuffers = (pinCoords: {x: number, y: number}[]) => {
+  const createBuffers = (pinCoords: Point[]) => {
     let lineCacheX = new Map<string, number[]>();
     let lineCacheY = new Map<string, number[]>();
     let lineCacheLength = new Map<string, number>();
@@ -173,7 +173,7 @@ function App() {
     return Math.max(min, Math.min(max, val));
   }
 
-  async function lineSequenceCalculation(grayImg: ImageData, pinCoords: { x: number; y: number; }[],
+  async function lineSequenceCalculation(grayImg: ImageData, pinCoords: Point[],
     lineCacheX: Map<string, number[]>, lineCacheY: Map<string, number[]>, lineCacheLength: Map<string, number>) : Promise<void> {
       
     let lastPins: number[] = [];
@@ -209,7 +209,7 @@ function App() {
     resCtx.fillRect(0, 0, result.width, result.height);
     setResultContext(resCtx);
 
-    const lineCache = new Set<string>();
+    let weight = LINE_WEIGHT;
   
     for(let l=0; l<MAX_LINES; l++){
       if (l % 100 === 0) {
@@ -227,11 +227,42 @@ function App() {
         let xs = lineCacheX.get(`${testPin},${pin}`)!;
         let ys = lineCacheY.get(`${testPin},${pin}`)!;
            
+        let bonusCount = 0;
         let lineErr = 0;
         for(let i=0; i<xs.length; i++){
-          lineErr += error.data[(ys[i]*error.width + xs[i])*4];
+          const x = xs[i];
+          const y = ys[i];
+          
+          // const neighbors = getNeighborPoints(x, y, error.width, error.height);
+          // for(const neighbor of neighbors){
+          //   const idx = (neighbor.y * error.width + neighbor.x)*4;
+          //   if(grayImg.data[idx] > 200 && error.data[idx] < 56){
+          //     lineErr += ERROR_BONUS;
+          //   }
+          // }
+
+
+          const idx = (y * error.width + x)*4;
+
+          if(grayImg.data[idx] < 50 && error.data[idx] > 50){
+            bonusCount++
+          }
+          else{
+            if(bonusCount > 1){
+              lineErr += bonusCount * bonusCount;
+            }
+            bonusCount = 0;
+          }
+
+          // if(grayImg.data[idx] < 200)
+            lineErr += error.data[idx];
+            // if(error.data[idx] < 0)
+            //   lineErr -= (error.data[idx] ^ 2);
+          // else 
+          //   lineErr -= error.data[idx];
         }
      
+        lineErr = lineErr / xs.length;
         if(lineErr > maxErr){
           maxErr = lineErr;
           bestPin = testPin;
@@ -243,7 +274,6 @@ function App() {
      
       let xs = lineCacheX.get(`${bestPin},${pin}`)!;
       let ys = lineCacheY.get(`${bestPin},${pin}`)!;
-      let weight = LINE_WEIGHT;
      
     
       for(let i=0; i<line_mask.data.length; i++){
@@ -282,6 +312,23 @@ function App() {
   };
   };
 
+  function getNeighborPoints(row: number, col: number, totalRows: number, totalCols: number): Point[] {
+    const neighbors: Point[] = [];
+    const potentialNeighbors = [
+        { row: row - 1, col: col },     // top
+        { row: row + 1, col: col },     // bottom
+        { row: row, col: col - 1 },     // left
+        { row: row, col: col + 1 }      // right
+    ];
+
+    for (const { row: r, col: c } of potentialNeighbors) {
+        if (r >= 0 && r < totalRows && c >= 0 && c < totalCols) {
+            neighbors.push({ x: r, y: c });
+        }
+    }
+
+    return neighbors;
+}
   // function to wait for N ms
 
 
@@ -289,7 +336,7 @@ function App() {
     setLineWidth(value);
   };
   
-  function paint(pinFrom: number, pinTo: number, pinCoords:{ x: number; y: number; }[], canv:  HTMLCanvasElement, ctx: CanvasRenderingContext2D  ){
+  function paint(pinFrom: number, pinTo: number, pinCoords: Point[], canv:  HTMLCanvasElement, ctx: CanvasRenderingContext2D  ){
     const {x: xFrom, y: yFrom} = pinCoords[pinFrom];
     const {x: xTo, y: yTo} = pinCoords[pinTo];
     
@@ -319,6 +366,17 @@ function App() {
       return canvas.toDataURL();
   }
 
+  function adjustContrast(imgData: Uint8ClampedArray, contrast: number) {
+    const factor = (259 * (contrast + 255)) / (255 * (259 - contrast));
+
+    for (let i = 0; i < imgData.length; i += 4) {
+        // R, G, and B are the same for grayscale image
+        imgData[i] = factor * (imgData[i] - 128) + 128;
+        imgData[i + 1] = factor * (imgData[i + 1] - 128) + 128;
+        imgData[i + 2] = factor * (imgData[i + 2] - 128) + 128;
+    }
+}
+
   return (
     <div>
       <div {...getRootProps()}>
@@ -328,7 +386,7 @@ function App() {
       {image && <img src={image.src} alt="Uploaded preview" />}
       {grayscaleImage && <img src={grayscaleImage} alt="Grayscale"/>}
       {resultImage && <img src={resultImage} alt="Processed preview" />}
-      {pinSequence && <span>{pinSequence.join(', ')}</span>}
+      {pinSequence && <span>{pinSequence.length} - {pinSequence.join(', ')}</span>}
       <div>
         <h1>Slider Example</h1>
         <SliderComponent initialValue={4} onValueChange={handleSliderChange} />
@@ -338,3 +396,8 @@ function App() {
 }
 
 export default App;
+
+type Point = {
+  x: number,
+  y: number
+};
