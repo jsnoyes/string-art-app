@@ -1,19 +1,27 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { useDropzone } from 'react-dropzone';
+import SliderComponent from './components/SliderComponent';
 
 function App() {
   const MAX_LINES = 4000;
   const N_PINS = 36*8;
-  const MIN_LOOP = 20;             
-  const MIN_DISTANCE = 20;          
-  const LINE_WEIGHT = 15;            
-  const SCALE = 15;                  
-  const HOOP_DIAMETER = 0.625;       
+  const MIN_LOOP = 20;
+  const MIN_DISTANCE = 20;      
+  const LINE_WEIGHT = 15;
+  const SCALE = 1;
+  const HOOP_DIAMETER = 0.625;
   
   const [image, setImage] = useState<any>(null);
   const [grayscaleImage, setGrayscalImage] = useState<any>(null);
   const [resultImage, setResultImage] = useState<any>(null);
   const [pinSequence, setPinSequence] = useState<number[]>([]);
+  const [lineWidth, setLineWidth] = useState<number>(1);
+  const [resultCanvas, setResultCanvas] = useState<HTMLCanvasElement>();
+  const [pinCoordinates, setPinCoordinates] = useState<{
+    x: number;
+    y: number;
+}[]>();
+  const [resultContext, setResultContext] = useState<CanvasRenderingContext2D>();
 
   const { getRootProps, getInputProps } = useDropzone({
     accept: {'image/jpeg': ['.jpg'], 'image/png': ['.png']},
@@ -34,7 +42,7 @@ function App() {
 
   useEffect(() => {
     if (image) {
-      processData();
+      processData().catch((e) => console.log(e));
     }
   }, [image]);
 
@@ -58,7 +66,7 @@ function App() {
     let { lineCacheX, lineCacheY, lineCacheLength } = createBuffers(pinCoords);
 
     // start line sequence calculations
-    lineSequenceCalculation(grayImg, pinCoords, lineCacheX, lineCacheY, lineCacheLength);
+    await lineSequenceCalculation(grayImg, pinCoords, lineCacheX, lineCacheY, lineCacheLength);
 
     const timeEnd = performance.now();
 
@@ -111,6 +119,7 @@ function App() {
       });
     }
 
+    setPinCoordinates(pinCoords);
     return pinCoords;
   };
 
@@ -164,16 +173,15 @@ function App() {
     return Math.max(min, Math.min(max, val));
   }
 
-  const lineSequenceCalculation = (grayImg: ImageData, pinCoords: {x: number, y: number}[], 
-    lineCacheX: Map<string, number[]>, lineCacheY: Map<string, number[]>, lineCacheLength: Map<string, number>) => {
+  async function lineSequenceCalculation(grayImg: ImageData, pinCoords: { x: number; y: number; }[],
+    lineCacheX: Map<string, number[]>, lineCacheY: Map<string, number[]>, lineCacheLength: Map<string, number>) : Promise<void> {
       
     let lastPins: number[] = [];
       
-    let lineSequence: number[] = [];
     let threadLength = 0;
      
     let pin = 0;
-    lineSequence.push(pin);
+    let lineSequence: number[] = [pin];
      
     const errorCanvas = document.createElement('canvas');
     errorCanvas.width = grayImg.width;
@@ -190,12 +198,16 @@ function App() {
     const lineMaskCanvasCtx = lineMaskCanvas.getContext('2d')!;
     let line_mask = lineMaskCanvasCtx.createImageData(grayImg.width, grayImg.height);
      
+
     let result = document.createElement('canvas');
     result.width = grayImg.width * SCALE;
     result.height = grayImg.height * SCALE;
-    let resCtx = result.getContext('2d')!;
+    setResultCanvas(result);
+
+    let resCtx = result.getContext('2d')!;    
     resCtx.fillStyle = '#FFFFFF';
     resCtx.fillRect(0, 0, result.width, result.height);
+    setResultContext(resCtx);
 
     const lineCache = new Set<string>();
   
@@ -250,11 +262,6 @@ function App() {
       }
       
       
-
-      resCtx.beginPath();
-      resCtx.moveTo(pinCoords[pin].x * SCALE, pinCoords[pin].y * SCALE);
-      resCtx.lineTo(pinCoords[bestPin].x * SCALE, pinCoords[bestPin].y * SCALE);
-      resCtx.stroke();
      
       // let threadPieceLength = Math.sqrt(Math.pow(pinCoords[bestPin].x - pinCoords[pin].x, 2)
       //                      + Math.pow(pinCoords[bestPin].y - pinCoords[pin].y, 2));
@@ -264,11 +271,37 @@ function App() {
       lastPins.push(bestPin);
       if(lastPins.length > MIN_LOOP) lastPins.shift();
         
-      pin = bestPin;
-        
+      if(lineSequence.length % 100 === 0){
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+      paint(bestPin, pin, pinCoords, result!, resCtx!);
+
+      pin = bestPin;       
+      
       setPinSequence([...lineSequence]);
-    }
-    setResultImage(result.toDataURL());
+  };
+  };
+
+  // function to wait for N ms
+
+
+  const handleSliderChange = (value: number) => {
+    setLineWidth(value);
+  };
+  
+  function paint(pinFrom: number, pinTo: number, pinCoords:{ x: number; y: number; }[], canv:  HTMLCanvasElement, ctx: CanvasRenderingContext2D  ){
+    const {x: xFrom, y: yFrom} = pinCoords[pinFrom];
+    const {x: xTo, y: yTo} = pinCoords[pinTo];
+    
+    ctx.beginPath();
+    ctx.moveTo(xFrom * SCALE, yFrom * SCALE);
+    ctx.lineWidth = lineWidth;
+    ctx.globalAlpha = LINE_WEIGHT / 255;
+    ctx.lineTo(xTo * SCALE, yTo * SCALE);
+    ctx.stroke();
+    ctx.globalAlpha = 1.0;
+
+    setResultImage(canv.toDataURL())
   };
 
   function imageDataToDataURL(imageData: ImageData): string {
@@ -296,6 +329,10 @@ function App() {
       {grayscaleImage && <img src={grayscaleImage} alt="Grayscale"/>}
       {resultImage && <img src={resultImage} alt="Processed preview" />}
       {pinSequence && <span>{pinSequence.join(', ')}</span>}
+      <div>
+        <h1>Slider Example</h1>
+        <SliderComponent initialValue={4} onValueChange={handleSliderChange} />
+      </div>
     </div>
   );
 }
