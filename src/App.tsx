@@ -4,7 +4,8 @@ import SliderComponent from './components/SliderComponent';
 
 function App() {
   const MAX_LINES = 8000;
-  const N_PINS = 36*8;
+  const END_ERROR_THRESHOLD = 10;
+  const N_PINS = 36*20;
   const MIN_LOOP = 20;
   const MIN_DISTANCE = 20;      
   const LINE_WEIGHT = 15;
@@ -62,15 +63,15 @@ function App() {
 
     let pinCoords = getPinCoords(canvas.width);
 
-    let { lineCacheX, lineCacheY, lineCacheLength } = createBuffers(pinCoords);
+    let { lineCache, lineCacheLength } = createBuffers(pinCoords);
 
     // start line sequence calculations
-    await lineSequenceCalculation(grayImg, pinCoords, lineCacheX, lineCacheY, lineCacheLength);
+    await lineSequenceCalculation(grayImg, pinCoords, lineCache, lineCacheLength);
 
     const timeEnd = performance.now();
 
     console.log("Time taken: " + (timeEnd - timeStart));
-  }
+  } 
 
   // convert image to grayscale
   const createGrayScale = (imgData: ImageData) => {
@@ -145,8 +146,8 @@ function App() {
   }
 
   const createBuffers = (pinCoords: Point[]) => {
-    let lineCacheX = new Map<string, number[]>();
-    let lineCacheY = new Map<string, number[]>();
+    let lineCache = new Map<string, Point[]>();
+    // let lineCacheY = new Map<string, number[]>();
     let lineCacheLength = new Map<string, number>();
   
     for(let a=0; a<N_PINS; a++){
@@ -157,16 +158,16 @@ function App() {
         let points = bresenhamLine(x0, y0, x1, y1);
         let d = points.length;
   
-        lineCacheX.set(`${a},${b}`, points.map(p => p.x));
-        lineCacheX.set(`${b},${a}`, points.map(p => p.x));
-        lineCacheY.set(`${a},${b}`, points.map(p => p.y));
-        lineCacheY.set(`${b},${a}`, points.map(p => p.y));
+        lineCache.set(`${a},${b}`, points);
+        lineCache.set(`${b},${a}`, points);
+        // lineCacheY.set(`${a},${b}`, points.map(p => p.y));
+        // lineCacheY.set(`${b},${a}`, points.map(p => p.y));
         lineCacheLength.set(`${a},${b}`, d);
         lineCacheLength.set(`${b},${a}`, d);
       }
     }
   
-    return { lineCacheX, lineCacheY, lineCacheLength };
+    return { lineCache, lineCacheLength };
   };
 
   const clip = (val: number, min: number, max: number) => {
@@ -174,64 +175,68 @@ function App() {
   }
 
   async function lineSequenceCalculation(grayImg: ImageData, pinCoords: Point[],
-    lineCacheX: Map<string, number[]>, lineCacheY: Map<string, number[]>, lineCacheLength: Map<string, number>) : Promise<void> {
+    lineCache: Map<string, Point[]>, lineCacheLength: Map<string, number>) : Promise<void> {
       
-    let lastPins: number[] = [];
+    let lastPinsArrInx: number = 0;
+    let lastPinsArr: number[] = [];
+    let lastPinsSet: Set<number> = new Set();
       
     let threadLength = 0;
      
     let pin = 0;
     let lineSequence: number[] = [pin];
+
+    const dimension = grayImg.width;
+    const weight = LINE_WEIGHT;
      
-    const errorCanvas = document.createElement('canvas');
-    errorCanvas.width = grayImg.width;
-    errorCanvas.height = grayImg.height;
-    const errorCanvasCtx = errorCanvas.getContext('2d')!;
-    var error = errorCanvasCtx.createImageData(errorCanvas.width, errorCanvas.height);
+    var error: number[] = [];// =  errorCanvasCtx.createImageData(errorCanvas.width, errorCanvas.height);
     for(let i = 0; i < grayImg.data.length; i += 4){
-      error.data[i] = 0xFF - grayImg.data[i]; // Using the red channel
+      error[i] = 0xFF - grayImg.data[i]; // Using the red channel
     }
     
-    const lineMaskCanvas = document.createElement('canvas');
-    lineMaskCanvas.width = grayImg.width;
-    lineMaskCanvas.height = grayImg.height;
-    const lineMaskCanvasCtx = lineMaskCanvas.getContext('2d')!;
-    let line_mask = lineMaskCanvasCtx.createImageData(grayImg.width, grayImg.height);
+    // const lineMaskCanvas = document.createElement('canvas');
+    // lineMaskCanvas.width = grayImg.width;
+    // lineMaskCanvas.height = grayImg.height;
+    // const lineMaskCanvasCtx = lineMaskCanvas.getContext('2d')!;
+    // let line_mask = lineMaskCanvasCtx.createImageData(grayImg.width, grayImg.height);
      
 
     let result = document.createElement('canvas');
-    result.width = grayImg.width * SCALE;
-    result.height = grayImg.height * SCALE;
+    result.width = dimension * SCALE;
+    result.height = result.width;
     setResultCanvas(result);
 
     let resCtx = result.getContext('2d')!;    
     resCtx.fillStyle = '#FFFFFF';
     resCtx.fillRect(0, 0, result.width, result.height);
+    resCtx.lineWidth = lineWidth;
+    resCtx.globalAlpha = LINE_WEIGHT / 255;
     setResultContext(resCtx);
 
-    let weight = LINE_WEIGHT;
-  
-    for(let l=0; l<MAX_LINES; l++){
-      if (l % 100 === 0) {
-        console.log(l);
-        // calculate the error and log it please
-      }
+    let withinErrorThreshold = true;
+    while(withinErrorThreshold){
+    // for(let l=0; l<MAX_LINES; l++){
+      // if (l % 100 === 0) {
+      //   console.log(l);
+      //   // calculate the error and log it please
+      // }
      
       let maxErr = -Infinity;
       let bestPin = -1;
         
       for(let offset=MIN_DISTANCE; offset < N_PINS - MIN_DISTANCE; offset++){
         let testPin = (pin + offset) % N_PINS;
-        if(/*lineCache.has(pin + '-' + testPin) ||*/ lastPins.includes(testPin)) continue;
+        if(/*lineCache.has(pin + '-' + testPin) ||*/ lastPinsSet.has(testPin)) continue;
            
-        let xs = lineCacheX.get(`${testPin},${pin}`)!;
-        let ys = lineCacheY.get(`${testPin},${pin}`)!;
+        let points = lineCache.get(`${testPin},${pin}`)!;
+        // let ys = lineCacheY.get(`${testPin},${pin}`)!;
            
         let bonusCount = 0;
         let lineErr = 0;
-        for(let i=0; i<xs.length; i++){
-          const x = xs[i];
-          const y = ys[i];
+        for(const point of points){
+        // for(let i=0; i<points.length; i++){
+          // const x = points[i];
+          // const y = points[i];
           
           // const neighbors = getNeighborPoints(x, y, error.width, error.height);
           // for(const neighbor of neighbors){
@@ -242,9 +247,9 @@ function App() {
           // }
 
 
-          const idx = (y * error.width + x)*4;
+          const idx = (point.y * dimension + point.x)*4;
 
-          if(grayImg.data[idx] < 50 && error.data[idx] > 50){
+          if(grayImg.data[idx] < 50 && error[idx] > 50){
             bonusCount++
           }
           else{
@@ -255,40 +260,45 @@ function App() {
           }
 
           // if(grayImg.data[idx] < 200)
-            lineErr += error.data[idx];
+          lineErr += error[idx];
             // if(error.data[idx] < 0)
             //   lineErr -= (error.data[idx] ^ 2);
           // else 
           //   lineErr -= error.data[idx];
         }
      
-        lineErr = lineErr / xs.length;
+        lineErr = lineErr / points.length;
         if(lineErr > maxErr){
           maxErr = lineErr;
           bestPin = testPin;
         }
       }
+      if(maxErr < END_ERROR_THRESHOLD){
+        withinErrorThreshold = false;
+        continue;
+      }
      
       lineSequence.push(bestPin);
       // lineCache.add(pin + "-" + bestPin);
      
-      let xs = lineCacheX.get(`${bestPin},${pin}`)!;
-      let ys = lineCacheY.get(`${bestPin},${pin}`)!;
+      let points = lineCache.get(`${bestPin},${pin}`)!;
+      // let ys = lineCacheY.get(`${bestPin},${pin}`)!;
      
     
-      for(let i=0; i<line_mask.data.length; i++){
-        line_mask.data[i] = 0;
-      }
+      // for(let i=0; i<line_mask.data.length; i++){
+      //   line_mask.data[i] = 0;
+      // }
       
      
-      for(let i=0; i<xs.length; i++){
-        let idx = (ys[i] * line_mask.width + xs[i]) * 4;
-        line_mask.data[idx] = weight; // Assuming the line_mask is only interested in the red channel
-      }
+      // for(let i=0; i<xs.length; i++){
+      //   let idx = (ys[i] * line_mask.width + xs[i]) * 4;
+      //   line_mask.data[idx] = weight; // Assuming the line_mask is only interested in the red channel
+      // }
       
-      for(let i=0; i<xs.length; i++){
-        let idx = (ys[i] * line_mask.width + xs[i]) * 4;
-        error.data[idx] = clip(error.data[idx] - line_mask.data[idx], 0, 255);
+      for(const point of points){
+      // for(let i=0; i<xs.length; i++){
+        let idx = (point.y * dimension + point.x) * 4;
+        error[idx] = clip(error[idx] - weight, 0, 255);
       }
       
       
@@ -298,39 +308,30 @@ function App() {
      
       // threadLength += HOOP_DIAMETER / length * threadPieceLength;
         
-      lastPins.push(bestPin);
-      if(lastPins.length > MIN_LOOP) lastPins.shift();
+      const curIdx = lastPinsArrInx++ % MIN_LOOP;
+      if(lastPinsArrInx >= MIN_LOOP){
+        const pinToRemove = lastPinsArr[curIdx];
+        lastPinsSet.delete(pinToRemove);
+        lastPinsArr[curIdx] = bestPin;
+      } else {
+        lastPinsArr.push(bestPin);
+      }
+      lastPinsSet.add(bestPin);
+
         
       if(lineSequence.length % 100 === 0){
-        await new Promise(resolve => setTimeout(resolve, 100));
+        setResultImage(result.toDataURL());
+        await new Promise(resolve => setTimeout(resolve, 10));
       }
       paint(bestPin, pin, pinCoords, result!, resCtx!);
 
       pin = bestPin;       
       
       setPinSequence([...lineSequence]);
+    };
+
+    setResultImage(result.toDataURL());
   };
-  };
-
-  function getNeighborPoints(row: number, col: number, totalRows: number, totalCols: number): Point[] {
-    const neighbors: Point[] = [];
-    const potentialNeighbors = [
-        { row: row - 1, col: col },     // top
-        { row: row + 1, col: col },     // bottom
-        { row: row, col: col - 1 },     // left
-        { row: row, col: col + 1 }      // right
-    ];
-
-    for (const { row: r, col: c } of potentialNeighbors) {
-        if (r >= 0 && r < totalRows && c >= 0 && c < totalCols) {
-            neighbors.push({ x: r, y: c });
-        }
-    }
-
-    return neighbors;
-}
-  // function to wait for N ms
-
 
   const handleSliderChange = (value: number) => {
     setLineWidth(value);
@@ -342,13 +343,8 @@ function App() {
     
     ctx.beginPath();
     ctx.moveTo(xFrom * SCALE, yFrom * SCALE);
-    ctx.lineWidth = lineWidth;
-    ctx.globalAlpha = LINE_WEIGHT / 255;
     ctx.lineTo(xTo * SCALE, yTo * SCALE);
     ctx.stroke();
-    ctx.globalAlpha = 1.0;
-
-    setResultImage(canv.toDataURL())
   };
 
   function imageDataToDataURL(imageData: ImageData): string {
@@ -368,12 +364,13 @@ function App() {
 
   function adjustContrast(imgData: Uint8ClampedArray, contrast: number) {
     const factor = (259 * (contrast + 255)) / (255 * (259 - contrast));
+    const adjust = (num: number) => factor * (num - 128) + 128
 
     for (let i = 0; i < imgData.length; i += 4) {
         // R, G, and B are the same for grayscale image
-        imgData[i] = factor * (imgData[i] - 128) + 128;
-        imgData[i + 1] = factor * (imgData[i + 1] - 128) + 128;
-        imgData[i + 2] = factor * (imgData[i + 2] - 128) + 128;
+        imgData[i] = adjust(imgData[i]);
+        imgData[i + 1] = adjust(imgData[i + 1])
+        imgData[i + 2] = adjust(imgData[i + 2])
     }
 }
 
