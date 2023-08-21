@@ -4,15 +4,12 @@ import SliderComponent from './components/SliderComponent';
 
 function App() {
   const MAX_LINES = 8000;
-  const END_ERROR_THRESHOLD = 10;
-  const N_PINS = 36*20;
+  const END_ERROR_THRESHOLD = 15;
+  const N_PINS = 36*8;
   const MIN_LOOP = 20;
   const MIN_DISTANCE = 20;      
   const LINE_WEIGHT = 15;
-  const SCALE = 1;
-  const HOOP_DIAMETER = 0.625;
-  const ERROR_BONUS_THRESHOLD = 5;
-  const ERROR_BONUS = 5;
+  const INIT_RESULT_DIAMETER = 650;
   
   const [image, setImage] = useState<any>(null);
   const [grayscaleImage, setGrayscalImage] = useState<any>(null);
@@ -22,6 +19,8 @@ function App() {
   const [resultCanvas, setResultCanvas] = useState<HTMLCanvasElement>();
   const [pinCoordinates, setPinCoordinates] = useState<Point[]>();
   const [resultContext, setResultContext] = useState<CanvasRenderingContext2D>();
+  const [resultDiameterPx, setResultDiameterPix] = useState<number>(INIT_RESULT_DIAMETER);
+  const [scale, setScale] = useState<number>(1);
 
   const { getRootProps, getInputProps } = useDropzone({
     accept: {'image/jpeg': ['.jpg'], 'image/png': ['.png']},
@@ -39,6 +38,13 @@ function App() {
       reader.readAsArrayBuffer(file);
     }
   }});
+
+  useEffect(() => {
+    if(!resultDiameterPx || !image)
+          return;
+
+    setScale(resultDiameterPx / image.width);
+  }, [resultDiameterPx, image])
 
   useEffect(() => {
     if (image) {
@@ -202,7 +208,7 @@ function App() {
      
 
     let result = document.createElement('canvas');
-    result.width = dimension * SCALE;
+    result.width = dimension * scale;
     result.height = result.width;
     setResultCanvas(result);
 
@@ -260,7 +266,7 @@ function App() {
           }
 
           // if(grayImg.data[idx] < 200)
-          lineErr += error[idx];
+          lineErr += error[idx] < 0 ? 0 : error[idx];
             // if(error.data[idx] < 0)
             //   lineErr -= (error.data[idx] ^ 2);
           // else 
@@ -298,7 +304,7 @@ function App() {
       for(const point of points){
       // for(let i=0; i<xs.length; i++){
         let idx = (point.y * dimension + point.x) * 4;
-        error[idx] = clip(error[idx] - weight, 0, 255);
+        error[idx] -= weight;
       }
       
       
@@ -342,24 +348,29 @@ function App() {
     const {x: xTo, y: yTo} = pinCoords[pinTo];
     
     ctx.beginPath();
-    ctx.moveTo(xFrom * SCALE, yFrom * SCALE);
-    ctx.lineTo(xTo * SCALE, yTo * SCALE);
+    ctx.moveTo(xFrom * scale, yFrom * scale);
+    ctx.lineTo(xTo * scale, yTo * scale);
     ctx.stroke();
   };
 
   function imageDataToDataURL(imageData: ImageData): string {
       // Create a temporary canvas to draw the ImageData
-      const canvas = document.createElement('canvas');
-      canvas.width = imageData.width;
-      canvas.height = imageData.height;
-      const ctx = canvas.getContext('2d');
+      const canvasTemp = document.createElement('canvas');
+      canvasTemp.width = imageData.width;
+      canvasTemp.height = imageData.height;
+      const ctxTemp = canvasTemp.getContext('2d')!;
 
-      if (!ctx) {
-          throw new Error('Failed to get canvas 2D context.');
-      }
+      ctxTemp.putImageData(imageData, 0, 0);
 
-      ctx.putImageData(imageData, 0, 0);
-      return canvas.toDataURL();
+      const destCanvas = document.createElement('canvas');
+      destCanvas.width = imageData.width * scale;
+      destCanvas.height = destCanvas.width;
+      const destCtx = destCanvas.getContext('2d')!;
+      destCtx.drawImage(canvasTemp, 0, 0, imageData.width, imageData.height, 0, 0, destCanvas.width, destCanvas.height);
+    
+      // ctx.drawImage(canvas, 0, 0, canvas.width, canvas.height);
+      
+      return destCanvas.toDataURL();
   }
 
   function adjustContrast(imgData: Uint8ClampedArray, contrast: number) {
