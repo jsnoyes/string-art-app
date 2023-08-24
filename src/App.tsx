@@ -228,7 +228,7 @@ function App() {
         let testPin = (pin + offset) % N_PINS;
         if(lastPinsSet.has(testPin)) continue;
            
-        let points = lineCache.get(`${testPin},${pin}`)!;
+        let points = getLine(lineCache, testPin, pin);
            
         let lineErr = calculateLineError(points, dimension, grayImg, error);
      
@@ -245,12 +245,9 @@ function App() {
      
       lineSequence.push(bestPin);
      
-      let points = lineCache.get(`${bestPin},${pin}`)!;
+      let points = getLine(lineCache, bestPin, pin);
       
-      for(const point of points){
-        let idx = (point.y * dimension + point.x);
-        error[idx] -= weight;
-      }
+      addValueToPoints(points, dimension, error, weight);
      
       // let threadPieceLength = Math.sqrt(Math.pow(pinCoords[bestPin].x - pinCoords[pin].x, 2)
       //                      + Math.pow(pinCoords[bestPin].y - pinCoords[pin].y, 2));
@@ -304,6 +301,17 @@ function App() {
       lineErr += error[idx] < 0 ? 0 : error[idx];
     }
     return lineErr;
+  }
+
+  function getLine(lineCache: Map<string, Point[]>, startPin: number, endPin: number): Point[] {
+    return lineCache.get(`${startPin},${endPin}`)!;
+  }
+
+  function addValueToPoints(points: Point[], dimension: number, error: Uint8ClampedArray, weight: number) {
+    for (const point of points) {
+      let idx = (point.y * dimension + point.x);
+      error[idx] -= weight;
+    }
   }
 
   const handleSliderChange = (value: number) => {
