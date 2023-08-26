@@ -2,6 +2,12 @@ import { useState, useEffect } from 'react';
 import { useDropzone } from 'react-dropzone';
 import SliderComponent from './components/SliderComponent';
 
+type Individual = {
+  pinSequence: number[];
+  data?: Uint8ClampedArray;
+  fitness: number;
+};
+
 function App() {
   const MAX_LINES = 8000;
   const END_ERROR_THRESHOLD = 10;
@@ -10,6 +16,12 @@ function App() {
   const MIN_DISTANCE = 20;      
   const LINE_WEIGHT = 15;
   const INIT_RESULT_DIAMETER = 650;
+
+  const POPULATION_SIZE = 100;
+  const ELITISM_PERCENTAGE = .1;
+  const ELITISM_COUNT = Math.floor(POPULATION_SIZE * ELITISM_PERCENTAGE);
+  const MUTATION_RATE = .01;
+  const NUM_CROSSOVER_POINTS = 10;
   
   const [image, setImage] = useState<HTMLImageElement>();
   const [resultImage, setResultImage] = useState<any>(null);
@@ -20,6 +32,7 @@ function App() {
   const [resultContext, setResultContext] = useState<CanvasRenderingContext2D>();
   const [resultDiameterPx, setResultDiameterPix] = useState<number>(INIT_RESULT_DIAMETER);
   const [scale, setScale] = useState<number>(1);
+  const [generationNumber, setGenerationNumber] = useState<number>(0);
 
   const { getRootProps, getInputProps } = useDropzone({
     accept: {'image/jpeg': ['.jpg'], 'image/png': ['.png']},
@@ -51,13 +64,60 @@ function App() {
     }
   }, [image]);
 
+  const generate = (numPins: number): Individual => {
+    let lastPin = -Infinity;
+
+    const pinSequence = Array.from({length: 4000}, () => {
+      const pin = generatePin(numPins, lastPin);
+      lastPin = pin;
+      return pin;
+    });
+    return {
+      pinSequence,
+      fitness: 0
+    }
+  }
+
+  const generatePin = (numPins: number, lastPin: number, nextPin: number = -Infinity): number => {
+    const randomPin = () => {
+      return Math.floor(Math.random() * numPins);
+    }
+
+    let pin = randomPin();
+    while(pin === lastPin || pin === nextPin || Math.abs(pin - lastPin) < MIN_DISTANCE || Math.abs(pin - nextPin) < MIN_DISTANCE){
+      pin = randomPin();
+    }
+    return pin;
+  }
+
+  const getFitness = (ind: Individual, img: Uint8ClampedArray, lineCache: Map<string, Point[]>, dimension: number): number => {    
+    ind.data = new Uint8ClampedArray(img.length).fill(255);
+    for(let i = 0; i < ind.pinSequence.length - 1; i++){
+      const startPin = ind.pinSequence[i];
+      const endPin = ind.pinSequence[i+1];
+
+      const line = getLine(lineCache, startPin, endPin);
+      if((line?.length ?? 0) === 0){
+        console.log(' dfsa '+  startPin + ' ' + endPin);
+      }
+
+      addValueToPoints(line, dimension, ind.data, LINE_WEIGHT);
+    }
+
+    let totalError = 0;
+    // Optimize to only calculate inside of the circle
+    for(let i = 0; i < img.length; i++){
+      totalError += Math.abs(img[i] - ind.data[i]);
+    }
+
+    return totalError;
+  }
+
   const processData = async (img: HTMLImageElement) => {
     const timeStart = performance.now();
-
     // Create a canvas element to draw and process image
     const canvas = document.createElement('canvas');
     const ctx = canvas.getContext('2d')!;
-    
 
     canvas.width = img.width;
     canvas.height = img.height;
@@ -70,13 +130,149 @@ function App() {
 
     let { lineCache, lineCacheLength } = createBuffers(pinCoords);
 
+    let result = document.createElement('canvas');
+    result.width = img.width * scale;
+    result.height = result.width;
+    setResultCanvas(result);
+
+    let resCtx = result.getContext('2d')!;    
+    resCtx.fillStyle = '#FFFFFF';
+    resCtx.lineWidth = lineWidth;
+    resCtx.globalAlpha = LINE_WEIGHT / 255;  
+
+
+    let currentGeneration = [];
+    for(let i = 0; i < POPULATION_SIZE; i++){
+      const life = generate(N_PINS);
+      life.fitness = getFitness(life, grayImg, lineCache, img.width);
+      currentGeneration.push(life);
+    }
+
+    const MAX_GENS_WITHOUT_IMPROVEMENT = 3;
+    const TOURNAMENT_SIZE = 4;
+    let gensWithoutImprovement = 0;
+    let bestFitness = -Infinity;
+    while(gensWithoutImprovement < MAX_GENS_WITHOUT_IMPROVEMENT){      
+      resCtx.fillRect(0, 0, result.width, result.height);
+      resCtx.beginPath();
+
+      const nextGeneration: Individual[] = [];
+
+      // Elitism
+      const sortedByFitness = [...currentGeneration].sort((a,b) => a.fitness - b.fitness);
+      const elites = sortedByFitness.slice(0, ELITISM_COUNT);
+
+      elites.forEach((ind) => nextGeneration.push(ind));
+
+      // Breed
+      for(let i = 0; i < POPULATION_SIZE - ELITISM_COUNT; i++){
+        const parent1 = selection(currentGeneration, TOURNAMENT_SIZE);
+        const parent2 = selection(currentGeneration, TOURNAMENT_SIZE);
+
+        const child = crossover(parent1, parent2, N_PINS, NUM_CROSSOVER_POINTS);
+
+        mutate(N_PINS, child, MUTATION_RATE);
+
+        child.fitness = getFitness(child, grayImg, lineCache, img.width);
+        nextGeneration.push(child);
+      }
+
+
+      const best = nextGeneration.reduce((cur, next) => cur.fitness! > next.fitness! ? cur : next, nextGeneration[0]);
+      if(best.fitness > bestFitness){
+        bestFitness = best.fitness!;
+        gensWithoutImprovement = 0;
+      } else {
+        gensWithoutImprovement++;
+      }
+      currentGeneration = nextGeneration;
+
+      for(let i = 1; i < best.pinSequence.length; i++){
+        paint(best.pinSequence[i - 1], best.pinSequence[i], pinCoords, result, resCtx);
+      }
+  
+      resCtx.stroke();
+      setResultImage(result.toDataURL());
+      resCtx.clearRect(0, 0, result.width, result.height);
+      setGenerationNumber((num) => num + 1);
+      
+      await new Promise(resolve => setTimeout(resolve, 1));
+    }
+    
+
+
+
+
+//    setResultContext(resCtx);
+
+
     // start line sequence calculations
-    await lineSequenceCalculation(grayImg, pinCoords, lineCache, lineCacheLength, img.width);
+    // await lineSequenceCalculation(grayImg, pinCoords, lineCache, lineCacheLength, img.width);
 
     const timeEnd = performance.now();
 
     console.log("Time taken: " + (timeEnd - timeStart));
   } 
+
+  const crossover = (parent1: Individual, parent2: Individual, numPins: number, numCrossoverPoints: number): Individual => {
+    const length = parent1.pinSequence.length;
+    const childDna: number[] = [];
+
+    // Generate N unique crossover points
+    const crossoverPoints = [];
+    while (crossoverPoints.length < numCrossoverPoints) {
+        const rnd = Math.floor(Math.random() * (length - 2)) + 1; // from 1 to N - 1
+        if (crossoverPoints.indexOf(rnd) === -1) crossoverPoints.push(rnd);
+    }
+    crossoverPoints.sort((a, b) => a - b);
+  
+    let p1 = parent1;
+    let p2 = parent2;
+    // Generate child DNA with N crossover points
+    for (let i = 0, j = 0; i < length; i++) {
+        if (i === crossoverPoints[j]) {
+            j++;
+            if(Math.abs(childDna[i - 1] - p2.pinSequence[i]) < MIN_DISTANCE) {
+                childDna.push(generatePin(numPins, childDna[i - 1], p2.pinSequence[i + 1]));
+            } else {
+                childDna.push(p2.pinSequence[i]);
+            }
+            const pt = p1;
+            p1 = p2;
+            p2 = pt;
+        } else {
+            childDna.push(p1.pinSequence[i]);
+        }
+    }
+
+    const child: Individual = {
+        pinSequence: childDna,
+        fitness: 0      
+    };
+    return child;
+}
+
+  const mutate = (numPins: number, ind: Individual, mutationRate: number): void => {
+    for(let i = 0; i < ind.pinSequence.length; i++){
+      if(Math.random() < mutationRate){
+        ind.pinSequence[i] = generatePin(numPins, i === 0 ? -Infinity : ind.pinSequence[i - 1], i === ind.pinSequence.length - 1 ? Infinity : ind.pinSequence[i + 1]);
+      }
+    }
+  }
+
+  const selection = (population: Individual[], tournamentSize: number): Individual => {
+    let best: Individual | null = null;
+
+    // Tournament selection
+    for (let i = 0; i < tournamentSize; i++) {
+      const candidate = population[Math.floor(Math.random() * population.length)];
+      if (best === null || candidate.fitness > best.fitness) {
+        best = candidate;
+      }
+    }
+
+    return best!;
+  }
 
   // convert image to grayscale
   const createGrayScale = (imgData: ImageData) => {
@@ -307,10 +503,10 @@ function App() {
     return lineCache.get(`${startPin},${endPin}`)!;
   }
 
-  function addValueToPoints(points: Point[], dimension: number, error: Uint8ClampedArray, weight: number) {
+  function addValueToPoints(points: Point[], dimension: number, arr: Uint8ClampedArray, weight: number) {
     for (const point of points) {
       let idx = (point.y * dimension + point.x);
-      error[idx] -= weight;
+      arr[idx] -= weight;
     }
   }
 
@@ -362,7 +558,8 @@ function App() {
       </div>
       {image && <img src={image.src} alt="Uploaded preview" />}
       {resultImage && <img src={resultImage} alt="Processed preview" />}
-      {pinSequence && <span>{pinSequence.length} - {pinSequence.join(', ')}</span>}
+      {generationNumber && <span>Generation Number: {generationNumber}<br /></span>}
+      {pinSequence && <span>Pin Sequence: {pinSequence.length} - {pinSequence.join(', ')}<br /></span>}
       <div>
         <h1>Slider Example</h1>
         <SliderComponent initialValue={4} onValueChange={handleSliderChange} />
