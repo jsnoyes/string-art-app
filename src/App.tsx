@@ -16,23 +16,24 @@ function App() {
   const MIN_DISTANCE = 20;      
   const LINE_WEIGHT = 15;
   const INIT_RESULT_DIAMETER = 650;
+  const MAX_GENS_WITHOUT_IMPROVEMENT = 250;
 
-  const POPULATION_SIZE = 100;
+  const POPULATION_SIZE = 20;
   const ELITISM_PERCENTAGE = .1;
   const ELITISM_COUNT = Math.floor(POPULATION_SIZE * ELITISM_PERCENTAGE);
   const MUTATION_RATE = .01;
-  const NUM_CROSSOVER_POINTS = 10;
+  const NUM_CROSSOVER_POINTS = 1;
   
   const [image, setImage] = useState<HTMLImageElement>();
   const [resultImage, setResultImage] = useState<any>(null);
-  const [pinSequence, setPinSequence] = useState<number[]>([]);
   const [lineWidth, setLineWidth] = useState<number>(1);
   const [resultCanvas, setResultCanvas] = useState<HTMLCanvasElement>();
   const [pinCoordinates, setPinCoordinates] = useState<Point[]>();
-  const [resultContext, setResultContext] = useState<CanvasRenderingContext2D>();
   const [resultDiameterPx, setResultDiameterPix] = useState<number>(INIT_RESULT_DIAMETER);
   const [scale, setScale] = useState<number>(1);
   const [generationNumber, setGenerationNumber] = useState<number>(0);
+  const [gensWithoutImprovement, setGensWithoutImprovement] = useState<number>(0);
+  const [bestInd, setBestInd] = useState<Individual | undefined>(undefined);
 
   const { getRootProps, getInputProps } = useDropzone({
     accept: {'image/jpeg': ['.jpg'], 'image/png': ['.png']},
@@ -90,27 +91,14 @@ function App() {
     return pin;
   }
 
-  const getFitness = (ind: Individual, img: Uint8ClampedArray, lineCache: Map<string, Point[]>, dimension: number): number => {    
-    ind.data = new Uint8ClampedArray(img.length).fill(255);
-    for(let i = 0; i < ind.pinSequence.length - 1; i++){
-      const startPin = ind.pinSequence[i];
-      const endPin = ind.pinSequence[i+1];
-
-      const line = getLine(lineCache, startPin, endPin);
-      if((line?.length ?? 0) === 0){
-        console.log(' dfsa '+  startPin + ' ' + endPin);
-      }
-
-      addValueToPoints(line, dimension, ind.data, LINE_WEIGHT);
-    }
-
+  const getFitness = (ind: Individual, img: Uint8ClampedArray): number => {
     let totalError = 0;
     // Optimize to only calculate inside of the circle
     for(let i = 0; i < img.length; i++){
-      totalError += Math.abs(img[i] - ind.data[i]);
+      totalError += Math.abs(img[i] - ind.data![i]);
     }
 
-    return totalError;
+    return Number.MAX_SAFE_INTEGER - totalError;
   }
 
   const processData = async (img: HTMLImageElement) => {
@@ -128,7 +116,7 @@ function App() {
 
     let pinCoords = getPinCoords(canvas.width);
 
-    let { lineCache, lineCacheLength } = createBuffers(pinCoords);
+    let { lineCache, lineCacheLength } = createBuffers(pinCoords, img.width);
 
     let result = document.createElement('canvas');
     result.width = img.width * scale;
@@ -144,22 +132,22 @@ function App() {
     let currentGeneration = [];
     for(let i = 0; i < POPULATION_SIZE; i++){
       const life = generate(N_PINS);
-      life.fitness = getFitness(life, grayImg, lineCache, img.width);
+      life.data = mapPinsToData(life.pinSequence, grayImg, lineCache);
+      life.fitness = getFitness(life, grayImg);
       currentGeneration.push(life);
     }
 
-    const MAX_GENS_WITHOUT_IMPROVEMENT = 3;
     const TOURNAMENT_SIZE = 4;
-    let gensWithoutImprovement = 0;
     let bestFitness = -Infinity;
-    while(gensWithoutImprovement < MAX_GENS_WITHOUT_IMPROVEMENT){      
+    let generationsWithoutImprovement = 0;
+    while(generationsWithoutImprovement < MAX_GENS_WITHOUT_IMPROVEMENT){      
       resCtx.fillRect(0, 0, result.width, result.height);
       resCtx.beginPath();
 
       const nextGeneration: Individual[] = [];
 
       // Elitism
-      const sortedByFitness = [...currentGeneration].sort((a,b) => a.fitness - b.fitness);
+      const sortedByFitness = [...currentGeneration].sort((a,b) => b.fitness - a.fitness);
       const elites = sortedByFitness.slice(0, ELITISM_COUNT);
 
       elites.forEach((ind) => nextGeneration.push(ind));
@@ -169,31 +157,35 @@ function App() {
         const parent1 = selection(currentGeneration, TOURNAMENT_SIZE);
         const parent2 = selection(currentGeneration, TOURNAMENT_SIZE);
 
-        const child = crossover(parent1, parent2, N_PINS, NUM_CROSSOVER_POINTS);
+        const child = crossover(parent1, parent2, N_PINS, NUM_CROSSOVER_POINTS, grayImg, lineCache);
 
-        mutate(N_PINS, child, MUTATION_RATE);
+        mutate(N_PINS, child, MUTATION_RATE, lineCache, grayImg);
 
-        child.fitness = getFitness(child, grayImg, lineCache, img.width);
+        child.fitness = getFitness(child, grayImg);
         nextGeneration.push(child);
       }
 
 
       const best = nextGeneration.reduce((cur, next) => cur.fitness! > next.fitness! ? cur : next, nextGeneration[0]);
       if(best.fitness > bestFitness){
-        bestFitness = best.fitness!;
-        gensWithoutImprovement = 0;
+        bestFitness = best.fitness;
+        generationsWithoutImprovement = 0
+        setGensWithoutImprovement(generationsWithoutImprovement);
+        setBestInd(best);
+        for(let i = 1; i < best.pinSequence.length; i++){
+          paint(best.pinSequence[i - 1], best.pinSequence[i], pinCoords, result, resCtx);
+        }
+    
+        resCtx.stroke();
+        setResultImage(result.toDataURL());
+        resCtx.clearRect(0, 0, result.width, result.height);
       } else {
-        gensWithoutImprovement++;
+        generationsWithoutImprovement++;
+        setGensWithoutImprovement(generationsWithoutImprovement);
       }
       currentGeneration = nextGeneration;
 
-      for(let i = 1; i < best.pinSequence.length; i++){
-        paint(best.pinSequence[i - 1], best.pinSequence[i], pinCoords, result, resCtx);
-      }
-  
-      resCtx.stroke();
-      setResultImage(result.toDataURL());
-      resCtx.clearRect(0, 0, result.width, result.height);
+
       setGenerationNumber((num) => num + 1);
       
       await new Promise(resolve => setTimeout(resolve, 1));
@@ -214,50 +206,110 @@ function App() {
     console.log("Time taken: " + (timeEnd - timeStart));
   } 
 
-  const crossover = (parent1: Individual, parent2: Individual, numPins: number, numCrossoverPoints: number): Individual => {
-    const length = parent1.pinSequence.length;
-    const childDna: number[] = [];
+  const crossover = (parent1: Individual, parent2: Individual, numPins: number, numCrossoverPoints: number, grayImg: Uint8ClampedArray, lineCache: Map<string, Point[]>): Individual => {
+    let segs = Array.from({ length: numPins }, (): number[] => []);
 
-    // Generate N unique crossover points
-    const crossoverPoints = [];
-    while (crossoverPoints.length < numCrossoverPoints) {
-        const rnd = Math.floor(Math.random() * (length - 2)) + 1; // from 1 to N - 1
-        if (crossoverPoints.indexOf(rnd) === -1) crossoverPoints.push(rnd);
+    const reduc = (prev: number, cur: number) => {
+      segs[prev].push(cur);
+      segs[cur].push(prev);
+      return cur;
+    };
+    parent1.pinSequence.reduce(reduc);
+    parent2.pinSequence.reduce(reduc);
+
+    const childDna: number[] = [parent1.pinSequence.length];
+    let i = 0;
+    while(i <= parent1.pinSequence.length){
+      const startPin = i === 0 ? parent1.pinSequence[0] : childDna[i-1];
+      const segArr = segs[startPin];
+      if(segArr.length === 0) continue;
+
+      const idx = Math.floor(Math.random() * segArr.length);
+      const endPin = segArr[idx];
+
+      childDna[i] = endPin;
+      i++;
+      segArr.splice(idx, 1);
+      const endArr = segs[endPin];
+      endArr.splice(endArr.indexOf(startPin));
     }
-    crossoverPoints.sort((a, b) => a - b);
+
+
+
+
+
+
+    // const length = parent1.pinSequence.length;
+    // const childDna: number[] = [];
+
+    // // Generate N unique crossover points
+    // const crossoverPoints = [];
+    // while (crossoverPoints.length < numCrossoverPoints) {
+    //     const rnd = Math.floor(Math.random() * (length - 2)) + 1; // from 1 to N - 1
+    //     if (crossoverPoints.indexOf(rnd) === -1) crossoverPoints.push(rnd);
+    // }
+    // crossoverPoints.sort((a, b) => a - b);
   
-    let p1 = parent1;
-    let p2 = parent2;
-    // Generate child DNA with N crossover points
-    for (let i = 0, j = 0; i < length; i++) {
-        if (i === crossoverPoints[j]) {
-            j++;
-            if(Math.abs(childDna[i - 1] - p2.pinSequence[i]) < MIN_DISTANCE) {
-                childDna.push(generatePin(numPins, childDna[i - 1], p2.pinSequence[i + 1]));
-            } else {
-                childDna.push(p2.pinSequence[i]);
-            }
-            const pt = p1;
-            p1 = p2;
-            p2 = pt;
-        } else {
-            childDna.push(p1.pinSequence[i]);
-        }
-    }
+    // let p1 = parent1;
+    // let p2 = parent2;
+    // // Generate child DNA with N crossover points
+    // for (let i = 0, j = 0; i < length; i++) {
+    //     if (i === crossoverPoints[j]) {
+    //         j++;
+    //         if(Math.abs(childDna[i - 1] - p2.pinSequence[i]) < MIN_DISTANCE) {
+    //             childDna.push(generatePin(numPins, childDna[i - 1], p2.pinSequence[i + 1]));
+    //         } else {
+    //             childDna.push(p2.pinSequence[i]);
+    //         }
+    //         const pt = p1;
+    //         p1 = p2;
+    //         p2 = pt;
+    //     } else {
+    //         childDna.push(p1.pinSequence[i]);
+    //     }
+    // }
 
     const child: Individual = {
         pinSequence: childDna,
         fitness: 0      
     };
+    child.data = mapPinsToData(child.pinSequence, grayImg, lineCache);
     return child;
 }
 
-  const mutate = (numPins: number, ind: Individual, mutationRate: number): void => {
-    for(let i = 0; i < ind.pinSequence.length; i++){
+  const mutate = (numPins: number, ind: Individual, mutationRate: number, lineCache: Map<string, Point[]>, grayImg: Uint8ClampedArray): void => {
+    for(let i = 1; i < ind.pinSequence.length - 1; i++){
       if(Math.random() < mutationRate){
-        ind.pinSequence[i] = generatePin(numPins, i === 0 ? -Infinity : ind.pinSequence[i - 1], i === ind.pinSequence.length - 1 ? Infinity : ind.pinSequence[i + 1]);
+        addValueToPoints(getLine(lineCache, ind.pinSequence[i - 1], ind.pinSequence[i]), ind.data!, -LINE_WEIGHT);
+        addValueToPoints(getLine(lineCache, ind.pinSequence[i + 1], ind.pinSequence[i]), ind.data!, -LINE_WEIGHT);
+
+        ind.pinSequence[i] = getBestPin(ind.pinSequence[i - 1], ind.pinSequence[i + 1], numPins, lineCache, grayImg, ind.data!);
+
+        addValueToPoints(getLine(lineCache, ind.pinSequence[i - 1], ind.pinSequence[i] ), ind.data!, LINE_WEIGHT);
+        addValueToPoints(getLine(lineCache, ind.pinSequence[i + 1], ind.pinSequence[i] ), ind.data!, LINE_WEIGHT);
       }
     }
+  }
+
+  const getBestPin = (prevPin: number, nextPin: number, numPins: number, lineCache: Map<string, Point[]>, grayImg: Uint8ClampedArray, curImg: Uint8ClampedArray): number => {
+      let minErr = Infinity;
+      let bestPin = -1;
+        
+      for(let testPin = 0; testPin < numPins; testPin++){
+        if(Math.min(Math.abs(prevPin - testPin),  numPins - Math.abs(prevPin - testPin)) < MIN_DISTANCE || Math.min(Math.abs(nextPin - testPin),  numPins - Math.abs(nextPin - testPin)) < MIN_DISTANCE) continue;
+           
+        let points = [...getLine(lineCache, testPin, prevPin), ...getLine(lineCache, testPin, nextPin)];
+        
+        let lineErr = points.map(p => Math.abs(grayImg[p.idx] - (curImg[p.idx] - LINE_WEIGHT))).reduce((prev, cur) => prev + cur, 0);
+     
+        lineErr = lineErr / points.length;
+        if(lineErr < minErr){
+          minErr = lineErr;
+          bestPin = testPin;
+        }
+      }
+
+      return bestPin;
   }
 
   const selection = (population: Individual[], tournamentSize: number): Individual => {
@@ -315,9 +367,12 @@ function App() {
 
     for(let i=0; i<N_PINS; i++){
       let angle = 2 * Math.PI * i / N_PINS;
+      const x = Math.floor(center + radius * Math.cos(angle));
+      const y = Math.floor(center + radius * Math.sin(angle));
       pinCoords.push({
-        x: Math.floor(center + radius * Math.cos(angle)),
-        y: Math.floor(center + radius * Math.sin(angle))
+        x,
+        y,
+        idx: y * length + x
       });
     }
 
@@ -325,17 +380,17 @@ function App() {
     return pinCoords;
   };
 
-  const bresenhamLine = (x1: number, y1: number, x2: number, y2: number) => {
+  const bresenhamLine = (x1: number, y1: number, x2: number, y2: number, dimension: number): Point[] => {
     const deltaX = Math.abs(x2 - x1);
     const deltaY = Math.abs(y2 - y1);
     const sx = (x1 < x2) ? 1 : -1;
     const sy = (y1 < y2) ? 1 : -1;
     let err = deltaX - deltaY;
   
-    const points = [];
+    const points: Point[] = [];
   
     while(true) {
-      points.push({ x: x1, y: y1 });
+      points.push({ x: x1, y: y1, idx: y1 * dimension + x1 });
   
       if ((x1 === x2) && (y1 === y2)) break;
       let e2 = 2 * err;
@@ -346,17 +401,17 @@ function App() {
     return points;
   }
 
-  const createBuffers = (pinCoords: Point[]) => {
+  const createBuffers = (pinCoords: Point[], dimension: number) => {
     let lineCache = new Map<string, Point[]>();
     // let lineCacheY = new Map<string, number[]>();
     let lineCacheLength = new Map<string, number>();
   
     for(let a=0; a<N_PINS; a++){
       for(let b=a+MIN_DISTANCE; b<N_PINS; b++){
-        let { x: x0, y: y0 } = pinCoords[a];
+        let { x: x0, y: y0,  } = pinCoords[a];
         let { x: x1, y: y1 } = pinCoords[b];
   
-        let points = bresenhamLine(x0, y0, x1, y1);
+        let points = bresenhamLine(x0, y0, x1, y1, dimension);
         let d = points.length;
   
         lineCache.set(`${a},${b}`, points);
@@ -371,142 +426,26 @@ function App() {
     return { lineCache, lineCacheLength };
   };
 
-  const clip = (val: number, min: number, max: number) => {
-    return Math.max(min, Math.min(max, val));
-  }
+  function mapPinsToData(pinSeq: number[], img: Uint8ClampedArray, lineCache: Map<string, Point[]>): Uint8ClampedArray {
+    const arr = new Uint8ClampedArray(img.length).fill(255);
+    for (let i = 0; i < pinSeq.length - 1; i++) {
+      const startPin = pinSeq[i];
+      const endPin = pinSeq[i + 1];
 
-  async function lineSequenceCalculation(grayImg: Uint8ClampedArray, pinCoords: Point[],
-    lineCache: Map<string, Point[]>, lineCacheLength: Map<string, number>, dimension: number) : Promise<void> {
-      
-    let lastPinsArrInx: number = 0;
-    let lastPinsArr: number[] = [];
-    let lastPinsSet: Set<number> = new Set();
-      
-    let threadLength = 0;
-     
-    let pin = 0;
-    let lineSequence: number[] = [pin];
+      const line = getLine(lineCache, startPin, endPin);
 
-    const weight = LINE_WEIGHT;
-     
-    var error: Uint8ClampedArray = new Uint8ClampedArray(grayImg.length);// =  errorCanvasCtx.createImageData(errorCanvas.width, errorCanvas.height);
-    for(let i = 0; i < grayImg.length; i++){
-      error[i] = 0xFF - grayImg[i]; // Using the red channel
+      addValueToPoints(line, arr, LINE_WEIGHT);
     }
-    
-    // const lineMaskCanvas = document.createElement('canvas');
-    // lineMaskCanvas.width = grayImg.width;
-    // lineMaskCanvas.height = grayImg.height;
-    // const lineMaskCanvasCtx = lineMaskCanvas.getContext('2d')!;
-    // let line_mask = lineMaskCanvasCtx.createImageData(grayImg.width, grayImg.height);
-     
-
-    let result = document.createElement('canvas');
-    result.width = dimension * scale;
-    result.height = result.width;
-    setResultCanvas(result);
-
-    let resCtx = result.getContext('2d')!;    
-    resCtx.fillStyle = '#FFFFFF';
-    resCtx.fillRect(0, 0, result.width, result.height);
-    resCtx.lineWidth = lineWidth;
-    resCtx.globalAlpha = LINE_WEIGHT / 255;    
-    resCtx.beginPath();
-
-    setResultContext(resCtx);
-
-    let withinErrorThreshold = true;
-    while(withinErrorThreshold){     
-      let maxErr = -Infinity;
-      let bestPin = -1;
-        
-      for(let offset=MIN_DISTANCE; offset < N_PINS - MIN_DISTANCE; offset++){
-        let testPin = (pin + offset) % N_PINS;
-        if(lastPinsSet.has(testPin)) continue;
-           
-        let points = getLine(lineCache, testPin, pin);
-           
-        let lineErr = calculateLineError(points, dimension, grayImg, error);
-     
-        lineErr = lineErr / points.length;
-        if(lineErr > maxErr){
-          maxErr = lineErr;
-          bestPin = testPin;
-        }
-      }
-      if(maxErr < END_ERROR_THRESHOLD){
-        withinErrorThreshold = false;
-        continue;
-      }
-     
-      lineSequence.push(bestPin);
-     
-      let points = getLine(lineCache, bestPin, pin);
-      
-      addValueToPoints(points, dimension, error, weight);
-     
-      // let threadPieceLength = Math.sqrt(Math.pow(pinCoords[bestPin].x - pinCoords[pin].x, 2)
-      //                      + Math.pow(pinCoords[bestPin].y - pinCoords[pin].y, 2));
-     
-      // threadLength += HOOP_DIAMETER / length * threadPieceLength;
-        
-      const curIdx = lastPinsArrInx++ % MIN_LOOP;
-      if(lastPinsArrInx >= MIN_LOOP){
-        const pinToRemove = lastPinsArr[curIdx];
-        lastPinsSet.delete(pinToRemove);
-        lastPinsArr[curIdx] = bestPin;
-      } else {
-        lastPinsArr.push(bestPin);
-      }
-      lastPinsSet.add(bestPin);
-
-        
-      if(lineSequence.length % 100 === 0){
-        resCtx.stroke();
-        resCtx.beginPath();
-        setResultImage(result.toDataURL());
-        await new Promise(resolve => setTimeout(resolve, 1));
-      }
-      paint(bestPin, pin, pinCoords, result!, resCtx!);
-
-      pin = bestPin;       
-      
-      setPinSequence([...lineSequence]);
-    };
-
-    resCtx.stroke();
-    setResultImage(result.toDataURL());
-  };
-
-  function calculateLineError(points: Point[], dimension: number, grayImg: Uint8ClampedArray, error: Uint8ClampedArray) {
-    let bonusCount = 0;
-    let lineErr = 0;
-    for (const point of points) {
-      const idx = (point.y * dimension + point.x);
-  
-      if (grayImg[idx] < 50 && error[idx] > 50) {
-        bonusCount++;
-      }
-      else {
-        if (bonusCount > 1) {
-          lineErr += bonusCount * bonusCount;
-        }
-        bonusCount = 0;
-      }
-  
-      lineErr += error[idx] < 0 ? 0 : error[idx];
-    }
-    return lineErr;
+    return arr;
   }
 
   function getLine(lineCache: Map<string, Point[]>, startPin: number, endPin: number): Point[] {
     return lineCache.get(`${startPin},${endPin}`)!;
   }
 
-  function addValueToPoints(points: Point[], dimension: number, arr: Uint8ClampedArray, weight: number) {
+  function addValueToPoints(points: Point[], arr: Uint8ClampedArray, weight: number) {
     for (const point of points) {
-      let idx = (point.y * dimension + point.x);
-      arr[idx] -= weight;
+      arr[point.idx] -= weight;
     }
   }
 
@@ -521,26 +460,6 @@ function App() {
     ctx.moveTo(from.x * scale, from.y * scale);
     ctx.lineTo(to.x * scale, to.y * scale);
   };
-
-  // function imageDataToDataURL(imageData: ImageData): string {
-  //     // Create a temporary canvas to draw the ImageData
-  //     const canvasTemp = document.createElement('canvas');
-  //     canvasTemp.width = imageData.width;
-  //     canvasTemp.height = imageData.height;
-  //     const ctxTemp = canvasTemp.getContext('2d')!;
-
-  //     ctxTemp.putImageData(imageData, 0, 0);
-
-  //     const destCanvas = document.createElement('canvas');
-  //     destCanvas.width = imageData.width * scale;
-  //     destCanvas.height = destCanvas.width;
-  //     const destCtx = destCanvas.getContext('2d')!;
-  //     destCtx.drawImage(canvasTemp, 0, 0, imageData.width, imageData.height, 0, 0, destCanvas.width, destCanvas.height);
-    
-  //     // ctx.drawImage(canvas, 0, 0, canvas.width, canvas.height);
-      
-  //     return destCanvas.toDataURL();
-  // }
 
   function adjustContrast(imgData: Uint8ClampedArray, contrast: number) {
     const factor = (259 * (contrast + 255)) / (255 * (259 - contrast));
@@ -558,8 +477,11 @@ function App() {
       </div>
       {image && <img src={image.src} alt="Uploaded preview" />}
       {resultImage && <img src={resultImage} alt="Processed preview" />}
-      {generationNumber && <span>Generation Number: {generationNumber}<br /></span>}
-      {pinSequence && <span>Pin Sequence: {pinSequence.length} - {pinSequence.join(', ')}<br /></span>}
+      {generationNumber && <span><br /><span>Generation Number: {generationNumber}<br /></span>
+                                 <span>Generations without improvement: {gensWithoutImprovement} / {MAX_GENS_WITHOUT_IMPROVEMENT}<br /></span></span>}
+      {bestInd && <span><h3>Best:</h3> <br /><span>Fitness: {bestInd.fitness}</span>
+                              <br /><span>Pin Count: {bestInd.pinSequence.length}</span>
+                              <br /><span>Pins: {bestInd.pinSequence.join(', ')}</span></span>}
       <div>
         <h1>Slider Example</h1>
         <SliderComponent initialValue={4} onValueChange={handleSliderChange} />
@@ -572,7 +494,8 @@ export default App;
 
 type Point = {
   x: number,
-  y: number
+  y: number,
+  idx: number
 };
 
-
+type Pair = { pin1: number, pin2: number };
