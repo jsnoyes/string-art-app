@@ -21,7 +21,7 @@ function App() {
   const POPULATION_SIZE = 20;
   const ELITISM_PERCENTAGE = .1;
   const ELITISM_COUNT = Math.floor(POPULATION_SIZE * ELITISM_PERCENTAGE);
-  const MUTATION_RATE = .01;
+  const MUTATION_RATE = .03;
   const NUM_CROSSOVER_POINTS = 1;
   
   const [image, setImage] = useState<HTMLImageElement>();
@@ -157,7 +157,7 @@ function App() {
         const parent1 = selection(currentGeneration, TOURNAMENT_SIZE);
         const parent2 = selection(currentGeneration, TOURNAMENT_SIZE);
 
-        const child = crossover(parent1, parent2, N_PINS, NUM_CROSSOVER_POINTS, grayImg, lineCache);
+        const child = crossover(parent1, parent2, N_PINS, grayImg, lineCache);
 
         mutate(N_PINS, child, MUTATION_RATE, lineCache, grayImg);
 
@@ -206,7 +206,7 @@ function App() {
     console.log("Time taken: " + (timeEnd - timeStart));
   } 
 
-  const crossover = (parent1: Individual, parent2: Individual, numPins: number, numCrossoverPoints: number, grayImg: Uint8ClampedArray, lineCache: Map<string, Point[]>): Individual => {
+  const crossover = (parent1: Individual, parent2: Individual, numPins: number, grayImg: Uint8ClampedArray, lineCache: Map<string, Point[]>): Individual => {
     let segs = Array.from({ length: numPins }, (): number[] => []);
 
     const reduc = (prev: number, cur: number) => {
@@ -217,12 +217,15 @@ function App() {
     parent1.pinSequence.reduce(reduc);
     parent2.pinSequence.reduce(reduc);
 
-    const childDna: number[] = [parent1.pinSequence.length];
+    const childDnaLength = parent1.pinSequence.length;
+    const childDna: number[] = Array(childDnaLength);
     let i = 0;
-    while(i <= parent1.pinSequence.length){
+    while(i < childDnaLength){
       const startPin = i === 0 ? parent1.pinSequence[0] : childDna[i-1];
-      const segArr = segs[startPin];
-      if(segArr.length === 0) continue;
+      let segArr = segs[startPin];
+      while(segArr.length === 0){
+        segArr = segs[Math.floor(Math.random() * segs.length)];
+      }
 
       const idx = Math.floor(Math.random() * segArr.length);
       const endPin = segArr[idx];
@@ -231,43 +234,8 @@ function App() {
       i++;
       segArr.splice(idx, 1);
       const endArr = segs[endPin];
-      endArr.splice(endArr.indexOf(startPin));
+      endArr.splice(endArr.indexOf(startPin), 1);
     }
-
-
-
-
-
-
-    // const length = parent1.pinSequence.length;
-    // const childDna: number[] = [];
-
-    // // Generate N unique crossover points
-    // const crossoverPoints = [];
-    // while (crossoverPoints.length < numCrossoverPoints) {
-    //     const rnd = Math.floor(Math.random() * (length - 2)) + 1; // from 1 to N - 1
-    //     if (crossoverPoints.indexOf(rnd) === -1) crossoverPoints.push(rnd);
-    // }
-    // crossoverPoints.sort((a, b) => a - b);
-  
-    // let p1 = parent1;
-    // let p2 = parent2;
-    // // Generate child DNA with N crossover points
-    // for (let i = 0, j = 0; i < length; i++) {
-    //     if (i === crossoverPoints[j]) {
-    //         j++;
-    //         if(Math.abs(childDna[i - 1] - p2.pinSequence[i]) < MIN_DISTANCE) {
-    //             childDna.push(generatePin(numPins, childDna[i - 1], p2.pinSequence[i + 1]));
-    //         } else {
-    //             childDna.push(p2.pinSequence[i]);
-    //         }
-    //         const pt = p1;
-    //         p1 = p2;
-    //         p2 = pt;
-    //     } else {
-    //         childDna.push(p1.pinSequence[i]);
-    //     }
-    // }
 
     const child: Individual = {
         pinSequence: childDna,
@@ -292,19 +260,19 @@ function App() {
   }
 
   const getBestPin = (prevPin: number, nextPin: number, numPins: number, lineCache: Map<string, Point[]>, grayImg: Uint8ClampedArray, curImg: Uint8ClampedArray): number => {
-      let minErr = Infinity;
+      let maxUse = -Infinity;
       let bestPin = -1;
         
       for(let testPin = 0; testPin < numPins; testPin++){
-        if(Math.min(Math.abs(prevPin - testPin),  numPins - Math.abs(prevPin - testPin)) < MIN_DISTANCE || Math.min(Math.abs(nextPin - testPin),  numPins - Math.abs(nextPin - testPin)) < MIN_DISTANCE) continue;
+        if(Math.min(Math.abs(prevPin - testPin),  numPins - Math.abs(prevPin - testPin)) <= MIN_DISTANCE || Math.min(Math.abs(nextPin - testPin),  numPins - Math.abs(nextPin - testPin)) <= MIN_DISTANCE) continue;
            
         let points = [...getLine(lineCache, testPin, prevPin), ...getLine(lineCache, testPin, nextPin)];
         
-        let lineErr = points.map(p => Math.abs(grayImg[p.idx] - (curImg[p.idx] - LINE_WEIGHT))).reduce((prev, cur) => prev + cur, 0);
+        let lineUse = points.map(p => Math.max(0, Math.min(curImg[p.idx] - grayImg[p.idx], LINE_WEIGHT ))).reduce((prev, cur) => prev + cur, 0);
      
-        lineErr = lineErr / points.length;
-        if(lineErr < minErr){
-          minErr = lineErr;
+        lineUse = lineUse / points.length;
+        if(lineUse > maxUse){
+          maxUse = lineUse;
           bestPin = testPin;
         }
       }
