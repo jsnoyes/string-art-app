@@ -1,25 +1,20 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useDropzone } from 'react-dropzone';
 import SliderComponent from './components/SliderComponent';
 
 function App() {
-  const MAX_LINES = 8000;
-  const END_ERROR_THRESHOLD = 10;
+  const END_ERROR_THRESHOLD = 20;
   const N_PINS = 360;
   const MIN_LOOP = 20;
   const MIN_DISTANCE = 20;
-  const LINE_WEIGHT = 15;
+  const LINE_WEIGHT = 50;
   const INIT_RESULT_DIAMETER = 650;
   
   const [image, setImage] = useState<HTMLImageElement>();
   const [resultImage, setResultImage] = useState<any>(null);
   const [pinSequence, setPinSequence] = useState<number[]>([]);
   const [lineWidth, setLineWidth] = useState<number>(1);
-  const [resultCanvas, setResultCanvas] = useState<HTMLCanvasElement>();
-  const [pinCoordinates, setPinCoordinates] = useState<Point[]>();
-  const [resultContext, setResultContext] = useState<CanvasRenderingContext2D>();
-  const [resultDiameterPx, setResultDiameterPix] = useState<number>(INIT_RESULT_DIAMETER);
-  const [scale, setScale] = useState<number>(1);
+  const scale = useRef<number>(1);
 
   const { getRootProps, getInputProps } = useDropzone({
     accept: {'image/jpeg': ['.jpg'], 'image/png': ['.png']},
@@ -39,15 +34,16 @@ function App() {
   }});
 
   useEffect(() => {
-    if(!resultDiameterPx || !image)
-          return;
+    if(!image)
+      return;
 
-    setScale(resultDiameterPx / image.width);
-  }, [resultDiameterPx, image])
+    scale.current = INIT_RESULT_DIAMETER / image.width;
+
+    processData(image!).catch((e) => console.log(e));
+  }, [image])
 
   useEffect(() => {
     if (image) {
-      processData(image!).catch((e) => console.log(e));
     }
   }, [image]);
 
@@ -125,7 +121,6 @@ function App() {
       });
     }
 
-    setPinCoordinates(pinCoords);
     return pinCoords;
   };
 
@@ -175,40 +170,27 @@ function App() {
     return { lineCache, lineCacheLength };
   };
 
-  const clip = (val: number, min: number, max: number) => {
-    return Math.max(min, Math.min(max, val));
-  }
-
   async function lineSequenceCalculation(grayImg: Uint8ClampedArray, pinCoords: Point[],
     lineCache: Map<string, Point[]>, lineCacheLength: Map<string, number>, dimension: number) : Promise<void> {
       
     let lastPinsArrInx: number = 0;
     let lastPinsArr: number[] = [];
     let lastPinsSet: Set<number> = new Set();
-      
-    let threadLength = 0;
      
     let pin = 0;
     let lineSequence: number[] = [pin];
 
     const weight = LINE_WEIGHT;
      
-    var error: Uint8ClampedArray = new Uint8ClampedArray(grayImg.length);// =  errorCanvasCtx.createImageData(errorCanvas.width, errorCanvas.height);
+    var error: Uint8ClampedArray = new Uint8ClampedArray(grayImg.length);
     for(let i = 0; i < grayImg.length; i++){
       error[i] = 0xFF - grayImg[i]; // Using the red channel
     }
-    
-    // const lineMaskCanvas = document.createElement('canvas');
-    // lineMaskCanvas.width = grayImg.width;
-    // lineMaskCanvas.height = grayImg.height;
-    // const lineMaskCanvasCtx = lineMaskCanvas.getContext('2d')!;
-    // let line_mask = lineMaskCanvasCtx.createImageData(grayImg.width, grayImg.height);
      
 
     let result = document.createElement('canvas');
-    result.width = dimension * scale;
+    result.width = dimension * scale.current;
     result.height = result.width;
-    setResultCanvas(result);
 
     let resCtx = result.getContext('2d')!;    
     resCtx.fillStyle = '#FFFFFF';
@@ -216,8 +198,6 @@ function App() {
     resCtx.lineWidth = lineWidth;
     resCtx.globalAlpha = LINE_WEIGHT / 255;    
     resCtx.beginPath();
-
-    setResultContext(resCtx);
 
     let withinErrorThreshold = true;
     while(withinErrorThreshold){     
@@ -251,12 +231,7 @@ function App() {
         let idx = (point.y * dimension + point.x);
         error[idx] -= weight;
       }
-     
-      // let threadPieceLength = Math.sqrt(Math.pow(pinCoords[bestPin].x - pinCoords[pin].x, 2)
-      //                      + Math.pow(pinCoords[bestPin].y - pinCoords[pin].y, 2));
-     
-      // threadLength += HOOP_DIAMETER / length * threadPieceLength;
-        
+
       const curIdx = lastPinsArrInx++ % MIN_LOOP;
       if(lastPinsArrInx >= MIN_LOOP){
         const pinToRemove = lastPinsArr[curIdx];
@@ -313,30 +288,12 @@ function App() {
   function paint(pinFrom: number, pinTo: number, pinCoords: Point[], canv:  HTMLCanvasElement, ctx: CanvasRenderingContext2D  ){
     const from = pinCoords[pinFrom];
     const to = pinCoords[pinTo];
+
+    const currentScale = scale.current;
     
-    ctx.moveTo(from.x * scale, from.y * scale);
-    ctx.lineTo(to.x * scale, to.y * scale);
+    ctx.moveTo(from.x * currentScale, from.y * currentScale);
+    ctx.lineTo(to.x * currentScale, to.y * currentScale);
   };
-
-  // function imageDataToDataURL(imageData: ImageData): string {
-  //     // Create a temporary canvas to draw the ImageData
-  //     const canvasTemp = document.createElement('canvas');
-  //     canvasTemp.width = imageData.width;
-  //     canvasTemp.height = imageData.height;
-  //     const ctxTemp = canvasTemp.getContext('2d')!;
-
-  //     ctxTemp.putImageData(imageData, 0, 0);
-
-  //     const destCanvas = document.createElement('canvas');
-  //     destCanvas.width = imageData.width * scale;
-  //     destCanvas.height = destCanvas.width;
-  //     const destCtx = destCanvas.getContext('2d')!;
-  //     destCtx.drawImage(canvasTemp, 0, 0, imageData.width, imageData.height, 0, 0, destCanvas.width, destCanvas.height);
-    
-  //     // ctx.drawImage(canvas, 0, 0, canvas.width, canvas.height);
-      
-  //     return destCanvas.toDataURL();
-  // }
 
   function adjustContrast(imgData: Uint8ClampedArray, contrast: number) {
     const factor = (259 * (contrast + 255)) / (255 * (259 - contrast));
