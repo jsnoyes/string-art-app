@@ -10,7 +10,7 @@ function App() {
   const LINE_WEIGHT = 50;
   const INIT_RESULT_DIAMETER = 650;
   
-  const [image, setImage] = useState<HTMLImageElement>();
+  const [image, setImage] = useState<HTMLImageElement | null>();
   const [resultImage, setResultImage] = useState<any>(null);
   const [pinSequence, setPinSequence] = useState<number[]>([]);
   const [lineWidth, setLineWidth] = useState<number>(1);
@@ -21,6 +21,9 @@ function App() {
     onDrop: acceptedFiles => {
       const file = acceptedFiles[0];
       if (file) {
+        setImage(null);
+        setResultImage(null);
+        
         const reader = new FileReader();
         reader.onload = async (e) => {
           let img = new Image();
@@ -39,13 +42,8 @@ function App() {
 
     scale.current = INIT_RESULT_DIAMETER / image.width;
 
-    processData(image!).catch((e) => console.log(e));
+    processData(image).catch((e) => console.log(e));
   }, [image])
-
-  useEffect(() => {
-    if (image) {
-    }
-  }, [image]);
 
   const processData = async (img: HTMLImageElement) => {
     const timeStart = performance.now();
@@ -64,10 +62,10 @@ function App() {
 
     let pinCoords = getPinCoords(canvas.width);
 
-    let { lineCache, lineCacheLength } = createBuffers(pinCoords);
+    let lineCache = createBuffers(pinCoords);
 
     // start line sequence calculations
-    await lineSequenceCalculation(grayImg, pinCoords, lineCache, lineCacheLength, img.width);
+    await lineSequenceCalculation(grayImg, pinCoords, lineCache, img.width);
 
     const timeEnd = performance.now();
 
@@ -147,8 +145,6 @@ function App() {
 
   const createBuffers = (pinCoords: Point[]) => {
     let lineCache = new Map<string, Point[]>();
-    // let lineCacheY = new Map<string, number[]>();
-    let lineCacheLength = new Map<string, number>();
   
     for(let a=0; a<N_PINS; a++){
       for(let b=a+MIN_DISTANCE; b<N_PINS; b++){
@@ -160,18 +156,14 @@ function App() {
   
         lineCache.set(`${a},${b}`, points);
         lineCache.set(`${b},${a}`, points);
-        // lineCacheY.set(`${a},${b}`, points.map(p => p.y));
-        // lineCacheY.set(`${b},${a}`, points.map(p => p.y));
-        lineCacheLength.set(`${a},${b}`, d);
-        lineCacheLength.set(`${b},${a}`, d);
       }
     }
   
-    return { lineCache, lineCacheLength };
+    return lineCache;
   };
 
   async function lineSequenceCalculation(grayImg: Uint8ClampedArray, pinCoords: Point[],
-    lineCache: Map<string, Point[]>, lineCacheLength: Map<string, number>, dimension: number) : Promise<void> {
+    lineCache: Map<string, Point[]>, dimension: number) : Promise<void> {
       
     let lastPinsArrInx: number = 0;
     let lastPinsArr: number[] = [];
