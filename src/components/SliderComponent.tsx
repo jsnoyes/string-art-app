@@ -7,7 +7,7 @@ interface SliderProps {
   onValueChange?: (value: number) => void;
 }
 
-const SliderComponent: React.FC<SliderProps> = ({ initialValue = 5, onValueChange }) => {
+const SliderComponent: React.FC<SliderProps> = ({ initialValue = 1, onValueChange }) => {
   const [value, setValue] = useState<number>(initialValue);
 
   const handleChange = (event: React.ChangeEvent<HTMLInputElement>) => {

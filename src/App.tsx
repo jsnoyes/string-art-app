@@ -7,7 +7,7 @@ function App() {
   const END_ERROR_THRESHOLD = 10;
   const N_PINS = 360;
   const MIN_LOOP = 20;
-  const MIN_DISTANCE = 20;      
+  const MIN_DISTANCE = 20;
   const LINE_WEIGHT = 15;
   const INIT_RESULT_DIAMETER = 650;
   
