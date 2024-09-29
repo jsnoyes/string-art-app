@@ -3,11 +3,11 @@ import { useDropzone } from 'react-dropzone';
 import SliderComponent from './components/SliderComponent';
 
 function App() {
-  const END_ERROR_THRESHOLD = 20;
+  const END_ERROR_THRESHOLD = 15;
   const N_PINS = 360;
   const MIN_LOOP = 20;
   const MIN_DISTANCE = 20;
-  const LINE_WEIGHT = 50;
+  const LINE_WEIGHT = 15;
   const INIT_RESULT_DIAMETER = 650;
   
   const [image, setImage] = useState<HTMLImageElement | null>();
@@ -162,95 +162,181 @@ function App() {
     return lineCache;
   };
 
-  async function lineSequenceCalculation(grayImg: Uint8ClampedArray, pinCoords: Point[],
-    lineCache: Map<string, Point[]>, dimension: number) : Promise<void> {
-      
-    let lastPinsArrInx: number = 0;
+  async function lineSequenceCalculation(
+    grayImg: Uint8ClampedArray,
+    pinCoords: Point[],
+    lineCache: Map<string, Point[]>,
+    dimension: number
+): Promise<void> {
+    // Initialize variables for tracking used pins and the current pin
+    let lastPinsArrInx = 0;
     let lastPinsArr: number[] = [];
-    let lastPinsSet: Set<number> = new Set();
-     
+    let lastPinsSet = new Set<number>();
     let pin = 0;
     let lineSequence: number[] = [pin];
-
     const weight = LINE_WEIGHT;
-     
-    var error: Uint8ClampedArray = new Uint8ClampedArray(grayImg.length);
-    for(let i = 0; i < grayImg.length; i++){
-      error[i] = 0xFF - grayImg[i]; // Using the red channel
-    }
-     
 
-    let result = document.createElement('canvas');
+    // Initialize the error array from the grayscale image
+    const error = initializeErrorArray(grayImg);
+
+    // Create a canvas for drawing the result
+    const { canvas: result, context: resCtx } = createResultCanvas(dimension);
+
+    // Main loop: continue drawing lines until the error threshold is met
+    let withinErrorThreshold = true;
+    while (withinErrorThreshold) {
+        // Find the best pin that maximizes the error reduction
+        const { bestPin, maxError } = findBestPin(
+            pin,
+            lastPinsSet,
+            lineCache,
+            error,
+            dimension,
+            grayImg
+        );
+
+        // If the error is below the threshold, stop the loop
+        if (maxError < END_ERROR_THRESHOLD) {
+            withinErrorThreshold = false;
+            continue;
+        }
+
+        // Add the best pin to the line sequence
+        lineSequence.push(bestPin);
+
+        // Update the error array by subtracting the line weight at each pixel along the line
+        const points = lineCache.get(`${bestPin},${pin}`)!;
+        updateErrorArray(points, error, weight, dimension);
+
+        // Manage the circular buffer of recently used pins
+        lastPinsArrInx = updateLastPins(bestPin, lastPinsArrInx, lastPinsArr, lastPinsSet);
+
+        // Every 100 lines, update the canvas and pause briefly to prevent blocking the UI
+        if (lineSequence.length % 100 === 0) {
+            resCtx.stroke();
+            resCtx.beginPath();
+            setResultImage(result.toDataURL());
+            await new Promise((resolve) => setTimeout(resolve, 1));
+        }
+
+        // Paint the line between the two pins
+        paint(bestPin, pin, pinCoords, result, resCtx);
+
+        // Move to the next pin
+        pin = bestPin;
+
+        // Update the line sequence state
+        setPinSequence([...lineSequence]);
+    }
+
+    // Finalize drawing and set the result image
+    resCtx.stroke();
+    setResultImage(result.toDataURL());
+}
+
+/**
+ * Initializes the error array by inverting the grayscale image.
+ */
+function initializeErrorArray(grayImg: Uint8ClampedArray): Uint8ClampedArray {
+    const error = new Uint8ClampedArray(grayImg.length);
+    for (let i = 0; i < grayImg.length; i++) {
+        error[i] = 0xff - grayImg[i];
+    }
+    return error;
+}
+
+/**
+ * Creates and initializes the result canvas.
+ */
+function createResultCanvas(dimension: number): {
+    canvas: HTMLCanvasElement;
+    context: CanvasRenderingContext2D;
+} {
+    const result = document.createElement('canvas');
     result.width = dimension * scale.current;
     result.height = result.width;
 
-    let resCtx = result.getContext('2d')!;    
+    const resCtx = result.getContext('2d')!;
     resCtx.fillStyle = '#FFFFFF';
     resCtx.fillRect(0, 0, result.width, result.height);
     resCtx.lineWidth = lineWidth;
-    resCtx.globalAlpha = LINE_WEIGHT / 255;    
+    resCtx.globalAlpha = LINE_WEIGHT / 255;
     resCtx.beginPath();
 
-    let withinErrorThreshold = true;
-    while(withinErrorThreshold){     
-      let maxErr = -Infinity;
-      let bestPin = -1;
-        
-      for(let offset=MIN_DISTANCE; offset < N_PINS - MIN_DISTANCE; offset++){
-        let testPin = (pin + offset) % N_PINS;
-        if(lastPinsSet.has(testPin)) continue;
-           
-        let points = lineCache.get(`${testPin},${pin}`)!;
-           
-        let lineErr = calculateLineError(points, dimension, grayImg, error);
-     
-        lineErr = lineErr / points.length;
-        if(lineErr > maxErr){
-          maxErr = lineErr;
-          bestPin = testPin;
-        }
-      }
-      if(maxErr < END_ERROR_THRESHOLD){
-        withinErrorThreshold = false;
-        continue;
-      }
-     
-      lineSequence.push(bestPin);
-     
-      let points = lineCache.get(`${bestPin},${pin}`)!;
-      
-      for(const point of points){
-        let idx = (point.y * dimension + point.x);
-        error[idx] -= weight;
-      }
+    return { canvas: result, context: resCtx };
+}
 
-      const curIdx = lastPinsArrInx++ % MIN_LOOP;
-      if(lastPinsArrInx >= MIN_LOOP){
+/**
+ * Finds the best pin that maximizes error reduction.
+ */
+function findBestPin(
+    pin: number,
+    lastPinsSet: Set<number>,
+    lineCache: Map<string, Point[]>,
+    error: Uint8ClampedArray,
+    dimension: number,
+    grayImg: Uint8ClampedArray
+): { bestPin: number; maxError: number } {
+    let maxErr = -Infinity;
+    let bestPin = -1;
+
+    for (let offset = MIN_DISTANCE; offset < N_PINS - MIN_DISTANCE; offset++) {
+        const testPin = (pin + offset) % N_PINS;
+        if (lastPinsSet.has(testPin)) continue;
+
+        const points = lineCache.get(`${testPin},${pin}`)!;
+        let lineErr = calculateLineError(points, dimension, grayImg, error);
+        lineErr /= points.length;
+
+        if (lineErr > maxErr) {
+            maxErr = lineErr;
+            bestPin = testPin;
+        }
+    }
+
+    return { bestPin, maxError: maxErr };
+}
+
+/**
+ * Updates the error array by subtracting the line weight at each pixel along the line.
+ */
+function updateErrorArray(
+    points: Point[],
+    error: Uint8ClampedArray,
+    weight: number,
+    dimension: number
+): void {
+    for (const point of points) {
+        const idx = point.y * dimension + point.x;
+        error[idx] -= weight;
+    }
+}
+
+/**
+ * Manages the circular buffer of recently used pins.
+ */
+function updateLastPins(
+    bestPin: number,
+    lastPinsArrInx: number,
+    lastPinsArr: number[],
+    lastPinsSet: Set<number>
+): number {
+    const curIdx = lastPinsArrInx % MIN_LOOP;
+    lastPinsArrInx++;
+
+    if (lastPinsArrInx > MIN_LOOP) {
         const pinToRemove = lastPinsArr[curIdx];
         lastPinsSet.delete(pinToRemove);
         lastPinsArr[curIdx] = bestPin;
-      } else {
+    } else {
         lastPinsArr.push(bestPin);
-      }
-      lastPinsSet.add(bestPin);
+    }
 
-        
-      if(lineSequence.length % 100 === 0){
-        resCtx.stroke();
-        resCtx.beginPath();
-        setResultImage(result.toDataURL());
-        await new Promise(resolve => setTimeout(resolve, 1));
-      }
-      paint(bestPin, pin, pinCoords, result!, resCtx!);
+    lastPinsSet.add(bestPin);
+    return lastPinsArrInx;
+}
 
-      pin = bestPin;       
-      
-      setPinSequence([...lineSequence]);
-    };
 
-    resCtx.stroke();
-    setResultImage(result.toDataURL());
-  };
 
   function calculateLineError(points: Point[], dimension: number, grayImg: Uint8ClampedArray, error: Uint8ClampedArray) {
     let bonusCount = 0;
