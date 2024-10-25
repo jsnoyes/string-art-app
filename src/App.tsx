@@ -5,13 +5,13 @@ import SliderComponent from './components/SliderComponent';
 // Type Definitions
 type Point = { x: number; y: number };
 type RGBColor = { r: number; g: number; b: number };
+type Segment = { pinFrom: number; pinTo: number; colorIndex: number };
 
 // Constants
-const END_ERROR_THRESHOLD = 15;
-const N_PINS = 360;
-const MIN_LOOP = 20;
+const END_ERROR_THRESHOLD = 100;
+const N_PINS = 180; // Adjusted for performance
 const MIN_DISTANCE = 20;
-const LINE_WEIGHT = 15;
+const LINE_WEIGHT = 50;
 const INIT_RESULT_DIAMETER = 650;
 
 // Helper Functions
@@ -44,7 +44,7 @@ function whiteMaskCircle(imgData: Uint8ClampedArray, dimension: number): void {
   }
 }
 
-// **Modified Function to Compute Color Differences for Multiple Colors**
+// Function to Compute Color Differences for Multiple Colors
 function createColorDifferences(
   imgData: ImageData,
   inputColors: RGBColor[]
@@ -121,17 +121,17 @@ function createBuffers(
   const lineCache = new Map<string, Point[]>();
   for (let a = 0; a < nPins; a++) {
     for (let b = a + minDistance; b < nPins; b++) {
+      const key = `${a},${b}`;
       const { x: x0, y: y0 } = pinCoords[a];
       const { x: x1, y: y1 } = pinCoords[b];
       const points = bresenhamLine(x0, y0, x1, y1);
-      lineCache.set(`${a},${b}`, points);
-      lineCache.set(`${b},${a}`, points);
+      lineCache.set(key, points);
     }
   }
   return lineCache;
 }
 
-// **Modified Function to Calculate Line Error for a Specific Color**
+// Function to Calculate Line Error for a Specific Color
 function calculateLineErrorForColor(
   points: Point[],
   dimension: number,
@@ -153,23 +153,6 @@ function calculateLineErrorForColor(
     lineErr += error[idx] < 0 ? 0 : error[idx];
   }
   return lineErr;
-}
-
-function paint(
-  pinFrom: number,
-  pinTo: number,
-  pinCoords: Point[],
-  ctx: CanvasRenderingContext2D,
-  scale: number,
-  color: RGBColor
-): void {
-  ctx.strokeStyle = `rgb(${color.r},${color.g},${color.b})`;
-  ctx.beginPath();
-  const from = pinCoords[pinFrom];
-  const to = pinCoords[pinTo];
-  ctx.moveTo(from.x * scale, from.y * scale);
-  ctx.lineTo(to.x * scale, to.y * scale);
-  ctx.stroke();
 }
 
 function initializeErrorArrays(
@@ -201,28 +184,23 @@ function createResultCanvas(
   return { canvas, context: ctx };
 }
 
-// **Modified Function to Find Best Pin and Color**
-function findBestPinAndColor(
-  pin: number,
-  lastPinsSet: Set<number>,
+// Function to Find Best Line and Color
+function findBestLineAndColor(
   lineCache: Map<string, Point[]>,
   errorArrays: Uint8ClampedArray[],
   diffImgs: Uint8ClampedArray[],
-  dimension: number,
-  nPins: number,
-  minDistance: number
-): { bestPin: number; maxError: number; bestColorIndex: number } {
+  dimension: number
+): { bestPinFrom: number; bestPinTo: number; maxError: number; bestColorIndex: number } {
   let maxErr = -Infinity;
-  let bestPin = -1;
+  let bestPinFrom = -1;
+  let bestPinTo = -1;
   let bestColorIndex = -1;
 
-  for (let offset = minDistance; offset < nPins - minDistance; offset++) {
-    const testPin = (pin + offset) % nPins;
-    if (lastPinsSet.has(testPin)) continue;
-    const points = lineCache.get(`${testPin},${pin}`);
-    if (!points) continue;
+  for (const [key, points] of lineCache) {
+    const [pinFromStr, pinToStr] = key.split(',');
+    const pinFrom = parseInt(pinFromStr, 10);
+    const pinTo = parseInt(pinToStr, 10);
 
-    // Evaluate each color
     for (let colorIdx = 0; colorIdx < diffImgs.length; colorIdx++) {
       let lineErr = calculateLineErrorForColor(
         points,
@@ -233,13 +211,14 @@ function findBestPinAndColor(
       lineErr /= points.length;
       if (lineErr > maxErr) {
         maxErr = lineErr;
-        bestPin = testPin;
+        bestPinFrom = pinFrom;
+        bestPinTo = pinTo;
         bestColorIndex = colorIdx;
       }
     }
   }
 
-  return { bestPin, maxError: maxErr, bestColorIndex };
+  return { bestPinFrom, bestPinTo, maxError: maxErr, bestColorIndex };
 }
 
 function updateErrorArray(
@@ -254,38 +233,124 @@ function updateErrorArray(
   }
 }
 
-function updateLastPins(
-  bestPin: number,
-  lastPinsArrInx: number,
-  lastPinsArr: number[],
-  lastPinsSet: Set<number>,
-  minLoop: number
-): number {
-  const curIdx = lastPinsArrInx % minLoop;
-  lastPinsArrInx++;
-  if (lastPinsArrInx > minLoop) {
-    const pinToRemove = lastPinsArr[curIdx];
-    lastPinsSet.delete(pinToRemove);
-    lastPinsArr[curIdx] = bestPin;
-  } else {
-    lastPinsArr.push(bestPin);
+// Function to Order Segments for Each Color
+function orderSegmentsForColor(
+  segments: Segment[],
+  pinCoords: Point[]
+): Segment[] {
+  if (segments.length === 0) return [];
+
+  // Map pins to segments that start or end at that pin
+  const pinToSegments = new Map<number, { segment: Segment; isStart: boolean }[]>();
+  for (const segment of segments) {
+    if (!pinToSegments.has(segment.pinFrom))
+      pinToSegments.set(segment.pinFrom, []);
+    pinToSegments.get(segment.pinFrom)!.push({ segment, isStart: true });
+    if (!pinToSegments.has(segment.pinTo))
+      pinToSegments.set(segment.pinTo, []);
+    pinToSegments.get(segment.pinTo)!.push({ segment, isStart: false });
   }
-  lastPinsSet.add(bestPin);
-  return lastPinsArrInx;
+
+  const orderedSegments: Segment[] = [];
+  const usedSegments = new Set<Segment>();
+
+  // Start with any segment
+  let currentSegment = segments[0];
+  orderedSegments.push(currentSegment);
+  usedSegments.add(currentSegment);
+
+  let currentPin = currentSegment.pinTo; // Starting pin
+
+  while (usedSegments.size < segments.length) {
+    let nextSegmentInfo = null;
+
+    // Find a segment that connects to currentPin
+    const possibleSegments = pinToSegments.get(currentPin) || [];
+    for (const { segment, isStart } of possibleSegments) {
+      if (usedSegments.has(segment)) continue;
+      nextSegmentInfo = { segment, isStart };
+      break;
+    }
+
+    if (nextSegmentInfo) {
+      const { segment, isStart } = nextSegmentInfo;
+      let nextSegment = { ...segment };
+      if (isStart) {
+        // No need to reverse if the segment starts at currentPin
+      } else {
+        // Reverse the segment if it ends at currentPin
+        [nextSegment.pinFrom, nextSegment.pinTo] = [nextSegment.pinTo, nextSegment.pinFrom];
+      }
+      orderedSegments.push(nextSegment);
+      usedSegments.add(segment);
+      currentPin = nextSegment.pinTo;
+    } else {
+      // Find the closest unused segment
+      let minDistance = Infinity;
+      let closestSegment = null;
+      let closestIsStart = true;
+      let closestPin = -1;
+
+      for (const segment of segments) {
+        if (usedSegments.has(segment)) continue;
+        const pins = [
+          { pin: segment.pinFrom, isStart: true },
+          { pin: segment.pinTo, isStart: false },
+        ];
+        for (const { pin, isStart } of pins) {
+          const distance = pinDistance(pinCoords[currentPin], pinCoords[pin]);
+          if (distance < minDistance) {
+            minDistance = distance;
+            closestSegment = segment;
+            closestIsStart = isStart;
+            closestPin = pin;
+          }
+        }
+      }
+
+      if (closestSegment) {
+        let nextSegment = { ...closestSegment };
+        if (!closestIsStart) {
+          // Reverse the segment if the closest pin is the end pin
+          [nextSegment.pinFrom, nextSegment.pinTo] = [nextSegment.pinTo, nextSegment.pinFrom];
+        }
+        orderedSegments.push(nextSegment);
+        usedSegments.add(closestSegment);
+        currentPin = nextSegment.pinTo;
+      } else {
+        break; // No segments left
+      }
+    }
+  }
+
+  return orderedSegments;
+}
+
+
+function pinDistance(a: Point, b: Point): number {
+  const dx = a.x - b.x;
+  const dy = a.y - b.y;
+  return Math.sqrt(dx * dx + dy * dy);
 }
 
 // Main Component
 function App() {
   const [image, setImage] = useState<HTMLImageElement | null>(null);
   const [resultImage, setResultImage] = useState<string | null>(null);
-  const [pinSequence, setPinSequence] = useState<number[]>([]);
+  const [segments, setSegments] = useState<Segment[]>([]);
   const [lineWidth, setLineWidth] = useState<number>(1);
   const scale = useRef<number>(1);
 
-  // **State for Multiple Input Colors**
+  // State for Multiple Input Colors
   const [inputColors, setInputColors] = useState<RGBColor[]>([
     { r: 255, g: 0, b: 0 },
   ]);
+
+  // **New State Variables**
+  const [showSegments, setShowSegments] = useState<boolean>(false);
+  const [displayedColorIndex, setDisplayedColorIndex] = useState<number | null>(null);
+  const [resultImagesByColor, setResultImagesByColor] = useState<{ [key: number]: string }>({});
+  const [orderedSegmentsByColorState, setOrderedSegmentsByColorState] = useState<{ [key: number]: Segment[] }>({});
 
   // Image Upload Handler
   const { getRootProps, getInputProps } = useDropzone({
@@ -317,7 +382,7 @@ function App() {
     canvas.height = img.height;
     ctx.drawImage(img, 0, 0);
     const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-    // **Use createColorDifferences to get an array of color difference arrays**
+    // Use createColorDifferences to get an array of color difference arrays
     const diffImgs = createColorDifferences(imgData, inputColors);
     const pinCoords = getPinCoords(canvas.width, N_PINS);
     const lineCache = createBuffers(pinCoords, N_PINS, MIN_DISTANCE);
@@ -327,7 +392,7 @@ function App() {
       lineCache,
       canvas.width,
       setResultImage,
-      setPinSequence,
+      setSegments,
       lineWidth,
       scale.current,
       LINE_WEIGHT,
@@ -343,74 +408,137 @@ function App() {
     lineCache: Map<string, Point[]>,
     dimension: number,
     setResultImage: (dataUrl: string) => void,
-    setPinSequence: (sequence: number[]) => void,
+    setSegments: (segments: Segment[]) => void,
     lineWidth: number,
     scaleValue: number,
     lineWeight: number,
     inputColors: RGBColor[]
   ): Promise<void> {
-    let lastPinsArrInx = 0;
-    let lastPinsArr: number[] = [];
-    let lastPinsSet = new Set<number>();
-    let pin = 0;
-    let lineSequence: number[] = [pin];
-    // **Initialize error arrays for each color**
     const errorArrays = initializeErrorArrays(diffImgs);
-    const { canvas: result, context: resCtx } = createResultCanvas(
-      dimension,
-      scaleValue,
-      lineWidth,
-      LINE_WEIGHT / 255
-    );
+    const segments: Segment[] = [];
+
     let withinErrorThreshold = true;
     while (withinErrorThreshold) {
-      const { bestPin, maxError, bestColorIndex } = findBestPinAndColor(
-        pin,
-        lastPinsSet,
+      const { bestPinFrom, bestPinTo, maxError, bestColorIndex } = findBestLineAndColor(
         lineCache,
         errorArrays,
         diffImgs,
-        dimension,
-        N_PINS,
-        MIN_DISTANCE
+        dimension
       );
       if (maxError < END_ERROR_THRESHOLD) {
         withinErrorThreshold = false;
         continue;
       }
-      lineSequence.push(bestPin);
-      const points = lineCache.get(`${bestPin},${pin}`)!;
-      // **Update the error array for the selected color**
+      const points = lineCache.get(`${bestPinFrom},${bestPinTo}`)!;
       updateErrorArray(
         points,
         errorArrays[bestColorIndex],
         lineWeight,
         dimension
       );
-      lastPinsArrInx = updateLastPins(
-        bestPin,
-        lastPinsArrInx,
-        lastPinsArr,
-        lastPinsSet,
-        MIN_LOOP
-      );
-      if (lineSequence.length % 100 === 0) {
+      segments.push({ pinFrom: bestPinFrom, pinTo: bestPinTo, colorIndex: bestColorIndex });
+
+      // Remove the line from lineCache to prevent reusing
+      lineCache.delete(`${bestPinFrom},${bestPinTo}`);
+
+      if (segments.length % 100 === 0) {
         await new Promise((resolve) => setTimeout(resolve, 1));
-        setResultImage(result.toDataURL());
       }
-      // **Draw the line with the selected color**
-      paint(
-        bestPin,
-        pin,
-        pinCoords,
-        resCtx,
-        scaleValue,
-        inputColors[bestColorIndex]
-      );
-      pin = bestPin;
-      setPinSequence([...lineSequence]);
     }
-    setResultImage(result.toDataURL());
+    setSegments(segments);
+
+    // Order Segments for Each Color
+    const segmentsByColor: { [key: number]: Segment[] } = {};
+
+    for (const segment of segments) {
+      if (!segmentsByColor[segment.colorIndex]) {
+        segmentsByColor[segment.colorIndex] = [];
+      }
+      segmentsByColor[segment.colorIndex].push(segment);
+    }
+
+    // Order the segments
+    const orderedSegmentsByColor: { [key: number]: Segment[] } = {};
+    for (const colorIndex in segmentsByColor) {
+      const orderedSegments = orderSegmentsForColor(segmentsByColor[colorIndex], pinCoords);
+      orderedSegmentsByColor[colorIndex] = orderedSegments;
+    }
+
+    // **Update state with ordered segments**
+    setOrderedSegmentsByColorState(orderedSegmentsByColor);
+
+    // Draw the Ordered Segments
+    const { canvas: resultOrdered, context: resCtxOrdered } = createResultCanvas(
+      dimension,
+      scaleValue,
+      lineWidth,
+      LINE_WEIGHT / 255
+    );
+
+    // **Create images for each color**
+    const resultImagesByColorTemp: { [key: number]: string } = {};
+
+    for (const colorIndex in orderedSegmentsByColor) {
+      const orderedSegments = orderedSegmentsByColor[colorIndex];
+      const colorIdx = parseInt(colorIndex, 10);
+
+      // Draw on combined canvas
+      resCtxOrdered.strokeStyle = `rgb(${inputColors[colorIdx].r},${inputColors[colorIdx].g},${inputColors[colorIdx].b})`;
+      resCtxOrdered.beginPath();
+
+      let isFirstSegment = true;
+      let lastPoint = null;
+      for (const segment of orderedSegments) {
+        const from = pinCoords[segment.pinFrom];
+        const to = pinCoords[segment.pinTo];
+
+        if (isFirstSegment) {
+          resCtxOrdered.moveTo(from.x * scaleValue, from.y * scaleValue);
+          isFirstSegment = false;
+        } else if (lastPoint && (from.x !== lastPoint.x || from.y !== lastPoint.y)) {
+          // Move to the starting point if not connected
+          resCtxOrdered.moveTo(from.x * scaleValue, from.y * scaleValue);
+        }
+        resCtxOrdered.lineTo(to.x * scaleValue, to.y * scaleValue);
+        lastPoint = to;
+      }
+      resCtxOrdered.stroke();
+
+      // Create individual canvas for each color
+      const { canvas: colorCanvas, context: colorCtx } = createResultCanvas(
+        dimension,
+        scaleValue,
+        lineWidth,
+        LINE_WEIGHT / 255
+      );
+
+      colorCtx.strokeStyle = `rgb(${inputColors[colorIdx].r},${inputColors[colorIdx].g},${inputColors[colorIdx].b})`;
+      colorCtx.beginPath();
+
+      isFirstSegment = true;
+      lastPoint = null;
+      for (const segment of orderedSegments) {
+        const from = pinCoords[segment.pinFrom];
+        const to = pinCoords[segment.pinTo];
+
+        if (isFirstSegment) {
+          colorCtx.moveTo(from.x * scaleValue, from.y * scaleValue);
+          isFirstSegment = false;
+        } else if (lastPoint && (from.x !== lastPoint.x || from.y !== lastPoint.y)) {
+          colorCtx.moveTo(from.x * scaleValue, from.y * scaleValue);
+        }
+        colorCtx.lineTo(to.x * scaleValue, to.y * scaleValue);
+        lastPoint = to;
+      }
+      colorCtx.stroke();
+
+      resultImagesByColorTemp[colorIdx] = colorCanvas.toDataURL();
+    }
+
+    // Update state with the result images by color
+    setResultImagesByColor(resultImagesByColorTemp);
+
+    setResultImage(resultOrdered.toDataURL());
   }
 
   // Slider Change Handler
@@ -418,7 +546,7 @@ function App() {
     setLineWidth(value);
   };
 
-  // **Handle Input Color Changes**
+  // Handle Input Color Changes
   const handleColorChange = (
     e: React.ChangeEvent<HTMLInputElement>,
     index: number
@@ -432,12 +560,12 @@ function App() {
     setInputColors(newInputColors);
   };
 
-  // **Add a New Color Picker**
+  // Add a New Color Picker
   const addColorPicker = () => {
     setInputColors([...inputColors, { r: 0, g: 0, b: 0 }]);
   };
 
-  // **Remove a Color Picker**
+  // Remove a Color Picker
   const removeColorPicker = (index: number) => {
     const newInputColors = inputColors.filter((_, idx) => idx !== index);
     setInputColors(newInputColors);
@@ -461,23 +589,25 @@ function App() {
       )}
       {resultImage && (
         <img
-          src={resultImage}
+          src={
+            displayedColorIndex === null
+              ? resultImage
+              : resultImagesByColor[displayedColorIndex]
+          }
           alt="Processed preview"
           style={{ maxWidth: '100%' }}
         />
       )}
-      {pinSequence.length > 0 && (
+      {segments.length > 0 && (
         <div>
-          <p>Total Pins Used: {pinSequence.length}</p>
-          {/* Optionally display the pin sequence */}
-          {/* <p>Pin Sequence: {pinSequence.join(', ')}</p> */}
+          <p>Total Segments Used: {segments.length}</p>
         </div>
       )}
       <div>
         <h2>Line Width</h2>
         <SliderComponent initialValue={4} onValueChange={handleSliderChange} />
       </div>
-      {/* **Color Pickers for Input Colors** */}
+      {/* Color Pickers for Input Colors */}
       <div>
         <h2>Select Input Colors</h2>
         {inputColors.map((color, index) => (
@@ -498,6 +628,38 @@ function App() {
           </div>
         ))}
         <button onClick={addColorPicker}>Add Color</button>
+      </div>
+      {/* **New Buttons and Display for Segments Data and Individual Colors** */}
+      <div>
+        <button onClick={() => setShowSegments(!showSegments)}>
+          {showSegments ? 'Hide Segments Data' : 'Show Segments Data'}
+        </button>
+      </div>
+      {showSegments && (
+        <div>
+          <h2>Segments Data</h2>
+          {Object.entries(orderedSegmentsByColorState).map(([colorIndexStr, segments]) => (
+            <div key={colorIndexStr}>
+              <h3>Color {parseInt(colorIndexStr) + 1}</h3>
+              <ul>
+                {segments.map((segment, idx) => (
+                  <li key={idx}>
+                    Start Pin: {segment.pinFrom}, End Pin: {segment.pinTo}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ))}
+        </div>
+      )}
+      <div>
+        <h2>Display Results for Individual Colors</h2>
+        <button onClick={() => setDisplayedColorIndex(null)}>Show All Colors</button>
+        {inputColors.map((color, index) => (
+          <button key={index} onClick={() => setDisplayedColorIndex(index)}>
+            Show Only Color {index + 1}
+          </button>
+        ))}
       </div>
     </div>
   );
