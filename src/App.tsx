@@ -8,10 +8,10 @@ type RGBColor = { r: number; g: number; b: number };
 type Segment = { pinFrom: number; pinTo: number; colorIndex: number };
 
 // Constants
-const END_ERROR_THRESHOLD = 100;
+const END_ERROR_THRESHOLD = 15;
 const N_PINS = 180; // Adjusted for performance
 const MIN_DISTANCE = 20;
-const LINE_WEIGHT = 50;
+const LINE_WEIGHT = 15;
 const INIT_RESULT_DIAMETER = 650;
 
 // Helper Functions
